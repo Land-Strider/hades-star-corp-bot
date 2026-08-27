@@ -1,0 +1,114 @@
+import { Client, GatewayIntentBits, REST, Routes } from 'discord.js';
+import pg from 'pg';
+import cron from 'node-cron';
+import dotenv from 'dotenv';
+import fs from 'fs';
+import path from 'path';
+
+import {
+  artPollCommand,
+  handleArtPollInteraction,
+  deleteActivePoll,
+  createNewArtifactPoll,
+  ensureActivePoll,
+  getArtPollConfig,
+  getAllArtPollConfigs
+} from './artpoll/artPoll.js';
+
+dotenv.config();
+
+const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+const client = new Client({
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent]
+});
+
+function getModuleConfig() {
+  try {
+    const raw = fs.readFileSync(path.resolve('src/modules.json'), 'utf8');
+    return JSON.parse(raw);
+  } catch (err) {
+    console.error('Failed to load modules.json:', err);
+    return { artPoll: true, wsRoster: false };
+  }
+}
+
+async function registerCommands() {
+  const modules = getModuleConfig();
+  const commands = [];
+
+  if (modules.artPoll) {
+    commands.push(artPollCommand.toJSON());
+  }
+
+  const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+  const guildId = process.env.POLL_GUILD_ID;
+
+  try {
+    console.log('🔄 Registering slash commands...');
+    if (guildId) {
+      await rest.put(
+        Routes.applicationGuildCommands(client.user.id, guildId),
+        { body: commands }
+      );
+      await rest.put(
+        Routes.applicationCommands(client.user.id),
+        { body: [] }
+      );
+      console.log(`✅ Guild slash commands registered for guild ${guildId}.`);
+    } else {
+      await rest.put(
+        Routes.applicationCommands(client.user.id),
+        { body: commands }
+      );
+      console.log('✅ Global slash commands updated across all servers.');
+    }
+  } catch (err) {
+    console.error('❌ Failed to register slash commands:', err);
+  }
+}
+
+client.once('clientReady', async () => {
+  console.log(`🤖 Logged in as ${client.user.tag}`);
+  await registerCommands();
+
+  const modules = getModuleConfig();
+
+  if (modules.artPoll) {
+    await ensureActivePoll(client, pool);
+
+    // Scheduled weekly closure & deletion: Sunday 02:59 UTC across all active guilds
+    cron.schedule('59 2 * * 0', async () => {
+      console.log('🔒 UTC Sunday 02:59 - Closing active artifact polls...');
+      await deleteActivePoll(client, pool);
+    }, { timezone: 'UTC' });
+
+    // Scheduled weekly repost: Sunday 03:00 UTC per configured guild
+    cron.schedule('0 3 * * 0', async () => {
+      console.log('🚀 UTC Sunday 03:00 - Reposting weekly artifact polls...');
+      const configs = getAllArtPollConfigs();
+
+      for (const [guildId, config] of Object.entries(configs)) {
+        if (!config.enabled || !config.pollStarted || !config.channelId) continue;
+        await createNewArtifactPoll(client, pool, config.channelId, guildId);
+      }
+    }, { timezone: 'UTC' });
+  }
+});
+
+client.on('interactionCreate', async (interaction) => {
+  const modules = getModuleConfig();
+  if (!modules.artPoll) return;
+
+  const isArtPollCmd = interaction.isChatInputCommand() && interaction.commandName === 'artpoll';
+  const isArtPollComp = interaction.isMessageComponent() && interaction.customId.startsWith('artpoll_');
+
+  if (isArtPollCmd || isArtPollComp) {
+    try {
+      await handleArtPollInteraction(interaction, client, pool);
+    } catch (err) {
+      console.error('Interaction processing error:', err);
+    }
+  }
+});
+
+client.login(process.env.DISCORD_TOKEN);
