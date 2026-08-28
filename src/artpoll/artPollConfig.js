@@ -90,7 +90,7 @@ function mapRowToConfig(row) {
 }
 
 export async function getArtPollConfig(pool, guildId) {
-  if (!guildId) return { ...DEFAULT_CONFIG };
+  if (!guildId || guildId === 'default') return { ...DEFAULT_CONFIG };
 
   await ensureConfigTableExist(pool);
 
@@ -117,7 +117,7 @@ export async function getArtPollConfig(pool, guildId) {
 }
 
 export async function saveArtPollConfig(pool, guildId, config) {
-  if (!guildId) return;
+  if (!guildId || guildId === 'default') return;
 
   await ensureConfigTableExist(pool);
 
@@ -143,7 +143,7 @@ export async function saveArtPollConfig(pool, guildId, config) {
 export async function getAllArtPollConfigs(pool) {
   await ensureConfigTableExist(pool);
 
-  const res = await pool.query(`SELECT * FROM art_poll_configs`);
+  const res = await pool.query(`SELECT * FROM art_poll_configs WHERE guild_id != 'default'`);
   const configs = {};
   for (const row of res.rows) {
     configs[row.guild_id] = mapRowToConfig(row);

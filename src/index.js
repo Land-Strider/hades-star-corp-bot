@@ -92,9 +92,10 @@ client.once('clientReady', async () => {
     // Scheduled weekly repost: Sunday 03:00 UTC per configured guild
     cron.schedule('0 3 * * 0', async () => {
       console.log('🚀 UTC Sunday 03:00 - Reposting weekly artifact polls...');
-      const configs = getAllArtPollConfigs();
+      const configs = await getAllArtPollConfigs(pool);
 
       for (const [guildId, config] of Object.entries(configs)) {
+        if (!guildId || guildId === 'default') continue;
         if (!config.enabled || !config.pollStarted || !config.channelId) continue;
         await createNewArtifactPoll(client, pool, config.channelId, guildId);
       }
