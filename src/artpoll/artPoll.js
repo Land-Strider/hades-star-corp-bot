@@ -1,9 +1,8 @@
-import { getArtPollConfig, saveArtPollConfig, getAllArtPollConfigs } from './artPollConfig.js';
-import { artPollCommand, handleArtPollInteraction as executeInteraction } from './artPollCommands.js';
-import { ensureStatsTablesExist, checkAndSnapshotPreClosure } from './artPollStats.js';
+import { ensureStatsTablesExist, checkAndSnapshotPreClosure, snapshotPollVotes } from './artPollStats.js';
 
 export { getArtPollConfig, saveArtPollConfig, getAllArtPollConfigs } from './artPollConfig.js';
 export { artPollCommand } from './artPollCommands.js';
+export { checkAndSnapshotPreClosure } from './artPollStats.js';
 
 export const ART_OPTIONS = [
   { text: 'Transport', emoji: { id: '1536709760378998834' } },
@@ -51,13 +50,17 @@ export async function terminateActivePoll(client, pool, guildId = null) {
   }
 }
 
-export async function deleteActivePoll(client, pool, guildId = null) {
+export async function deleteActivePoll(client, pool, guildId = null, isManual = false) {
   const activeRes = guildId
     ? await pool.query(`SELECT * FROM artifact_polls WHERE guild_id = $1 AND is_closed = FALSE`, [guildId])
     : await pool.query(`SELECT * FROM artifact_polls WHERE is_closed = FALSE`);
 
   for (const poll of activeRes.rows) {
     try {
+      if (!poll.is_snapshotted) {
+        await snapshotPollVotes(client, pool, poll);
+      }
+
       const channel = client.channels.cache.get(poll.channel_id) || await client.channels.fetch(poll.channel_id).catch(() => null);
       if (channel) {
         const message = channel.messages.cache.get(poll.message_id) || await channel.messages.fetch(poll.message_id).catch(() => null);
@@ -72,8 +75,8 @@ export async function deleteActivePoll(client, pool, guildId = null) {
           }
         }
       }
-      await pool.query(`UPDATE artifact_polls SET is_closed = TRUE, is_manual = TRUE WHERE poll_id = $1`, [poll.poll_id]);
-      console.log(`🗑️ Terminated poll #${poll.poll_id} (deletion scheduled in 2.5s)`);
+      await pool.query(`UPDATE artifact_polls SET is_closed = TRUE, is_manual = $1 WHERE poll_id = $2`, [isManual, poll.poll_id]);
+      console.log(`🗑️ Terminated poll #${poll.poll_id} (is_manual: ${isManual}, deletion scheduled in 2.5s)`);
     } catch (err) {
       console.error(`Error deleting poll #${poll.poll_id}:`, err);
     }
