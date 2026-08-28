@@ -31,9 +31,9 @@ export function getNextSundayClosure() {
 }
 
 export async function terminateActivePoll(client, pool, guildId = null) {
-  const activeRes = guildId
+  const activeRes = (guildId && guildId !== 'default')
     ? await pool.query(`SELECT * FROM artifact_polls WHERE guild_id = $1 AND is_closed = FALSE`, [guildId])
-    : await pool.query(`SELECT * FROM artifact_polls WHERE is_closed = FALSE`);
+    : await pool.query(`SELECT * FROM artifact_polls WHERE is_closed = FALSE AND guild_id != 'default'`);
 
   for (const poll of activeRes.rows) {
     try {
@@ -53,9 +53,9 @@ export async function terminateActivePoll(client, pool, guildId = null) {
 }
 
 export async function deleteActivePoll(client, pool, guildId = null, isManual = false) {
-  const activeRes = guildId
+  const activeRes = (guildId && guildId !== 'default')
     ? await pool.query(`SELECT * FROM artifact_polls WHERE guild_id = $1 AND is_closed = FALSE`, [guildId])
-    : await pool.query(`SELECT * FROM artifact_polls WHERE is_closed = FALSE`);
+    : await pool.query(`SELECT * FROM artifact_polls WHERE is_closed = FALSE AND guild_id != 'default'`);
 
   for (const poll of activeRes.rows) {
     try {
@@ -90,6 +90,11 @@ export async function closeActivePolls(client, pool, guildId = null) {
 }
 
 export async function createNewArtifactPoll(client, pool, channelId, guildId) {
+  if (!guildId || guildId === 'default') {
+    console.error('[ArtPoll] Cannot create poll without a valid Discord Guild ID.');
+    return false;
+  }
+
   const config = await getArtPollConfig(pool, guildId);
 
   const targetChannelId = channelId || config.channelId;
@@ -117,15 +122,17 @@ export async function createNewArtifactPoll(client, pool, channelId, guildId) {
     }
   });
 
+  const effectiveGuildId = guildId || channel.guild?.id;
+
   await pool.query(
     `INSERT INTO artifact_polls (guild_id, channel_id, message_id, closes_at) VALUES ($1, $2, $3, $4)`,
-    [guildId || channel.guild.id, targetChannelId, message.id, closesAt]
+    [effectiveGuildId, targetChannelId, message.id, closesAt]
   );
 
   config.pollStarted = true;
-  await saveArtPollConfig(pool, guildId, config);
+  await saveArtPollConfig(pool, effectiveGuildId, config);
 
-  console.log(`✅ Native artifact poll posted to target ${targetChannelId} in guild ${guildId}, closing at ${closesAt.toISOString()}.`);
+  console.log(`✅ Native artifact poll posted to target ${targetChannelId} in guild ${effectiveGuildId}, closing at ${closesAt.toISOString()}.`);
   return true;
 }
 
@@ -133,6 +140,7 @@ export async function ensureActivePoll(client, pool) {
   const configs = await getAllArtPollConfigs(pool);
 
   for (const [guildId, config] of Object.entries(configs)) {
+    if (!guildId || guildId === 'default') continue;
     if (!config.enabled || !config.pollStarted) continue;
 
     if (config.statsEnabled) {
