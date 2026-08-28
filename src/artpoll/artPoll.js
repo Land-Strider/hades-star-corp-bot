@@ -1,3 +1,4 @@
+import { getArtPollConfig, saveArtPollConfig, getAllArtPollConfigs } from './artPollConfig.js';
 import { ensureStatsTablesExist, checkAndSnapshotPreClosure, snapshotPollVotes } from './artPollStats.js';
 
 export { getArtPollConfig, saveArtPollConfig, getAllArtPollConfigs } from './artPollConfig.js';
@@ -88,7 +89,7 @@ export async function closeActivePolls(client, pool, guildId = null) {
 }
 
 export async function createNewArtifactPoll(client, pool, channelId, guildId) {
-  const config = getArtPollConfig(guildId);
+  const config = await getArtPollConfig(pool, guildId);
 
   const targetChannelId = channelId || config.channelId;
   const channel = client.channels.cache.get(targetChannelId) || await client.channels.fetch(targetChannelId).catch(() => null);
@@ -121,14 +122,14 @@ export async function createNewArtifactPoll(client, pool, channelId, guildId) {
   );
 
   config.pollStarted = true;
-  saveArtPollConfig(guildId, config);
+  await saveArtPollConfig(pool, guildId, config);
 
   console.log(`✅ Native artifact poll posted to target ${targetChannelId} in guild ${guildId}, closing at ${closesAt.toISOString()}.`);
   return true;
 }
 
 export async function ensureActivePoll(client, pool) {
-  const configs = getAllArtPollConfigs();
+  const configs = await getAllArtPollConfigs(pool);
 
   for (const [guildId, config] of Object.entries(configs)) {
     if (!config.enabled || !config.pollStarted) continue;
