@@ -42,29 +42,16 @@ async function registerCommands() {
   }
 
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
-  const guildId = process.env.POLL_GUILD_ID;
 
   try {
-    console.log('🔄 Registering slash commands...');
-    if (guildId) {
-      await rest.put(
-        Routes.applicationGuildCommands(client.user.id, guildId),
-        { body: commands }
-      );
-      await rest.put(
-        Routes.applicationCommands(client.user.id),
-        { body: [] }
-      );
-      console.log(`✅ Guild slash commands registered for guild ${guildId}.`);
-    } else {
-      await rest.put(
-        Routes.applicationCommands(client.user.id),
-        { body: commands }
-      );
-      console.log('✅ Global slash commands updated across all servers.');
-    }
+    console.log('🔄 Registering global slash commands...');
+    await rest.put(
+      Routes.applicationCommands(client.user.id),
+      { body: commands }
+    );
+    console.log('✅ Global slash commands updated across all servers.');
   } catch (err) {
-    console.error('❌ Failed to register slash commands:', err);
+    console.error('❌ Failed to register global slash commands:', err);
   }
 }
 
