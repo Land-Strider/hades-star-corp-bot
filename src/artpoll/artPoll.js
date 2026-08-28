@@ -1,4 +1,5 @@
 import { getArtPollConfig, saveArtPollConfig, getAllArtPollConfigs } from './artPollConfig.js';
+import { artPollCommand, handleArtPollInteraction as executeInteraction } from './artPollCommands.js';
 import { ensureStatsTablesExist, checkAndSnapshotPreClosure, snapshotPollVotes } from './artPollStats.js';
 
 export { getArtPollConfig, saveArtPollConfig, getAllArtPollConfigs } from './artPollConfig.js';

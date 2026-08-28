@@ -208,7 +208,7 @@ export async function handleArtPollInteraction(interaction, client, pool, { term
     });
   }
 
-  const config = getArtPollConfig(guildId);
+  const config = await getArtPollConfig(pool, guildId);
 
   if (!hasPollPermission(interaction.member, config)) {
     return interaction.reply({
@@ -264,13 +264,13 @@ export async function handleArtPollInteraction(interaction, client, pool, { term
 
     if (customId === 'artpoll_cfg_toggle') {
       config.enabled = !config.enabled;
-      saveArtPollConfig(guildId, config);
+      await saveArtPollConfig(pool, guildId, config);
       return interaction.update(buildConfigPayload(config));
     }
 
     if (customId === 'artpoll_cfg_toggle_stats') {
       config.statsEnabled = !config.statsEnabled;
-      saveArtPollConfig(guildId, config);
+      await saveArtPollConfig(pool, guildId, config);
 
       if (config.statsEnabled) {
         await ensureStatsTablesExist(pool);
@@ -281,31 +281,31 @@ export async function handleArtPollInteraction(interaction, client, pool, { term
 
     if (customId === 'artpoll_cfg_channel') {
       config.channelId = interaction.values[0];
-      saveArtPollConfig(guildId, config);
+      await saveArtPollConfig(pool, guildId, config);
       return interaction.update(buildConfigPayload(config));
     }
 
     if (customId === 'artpoll_cfg_access_role') {
       config.allowedRoleIds = [interaction.values[0]];
-      saveArtPollConfig(guildId, config);
+      await saveArtPollConfig(pool, guildId, config);
       return interaction.update(buildConfigPayload(config));
     }
 
     if (customId === 'artpoll_cfg_clear_access') {
       config.allowedRoleIds = [];
-      saveArtPollConfig(guildId, config);
+      await saveArtPollConfig(pool, guildId, config);
       return interaction.update(buildConfigPayload(config));
     }
 
     if (customId === 'artpoll_cfg_mention_role') {
       config.roleMentionId = interaction.values[0];
-      saveArtPollConfig(guildId, config);
+      await saveArtPollConfig(pool, guildId, config);
       return interaction.update(buildConfigPayload(config));
     }
 
     if (customId === 'artpoll_cfg_clear_mention') {
       config.roleMentionId = '';
-      saveArtPollConfig(guildId, config);
+      await saveArtPollConfig(pool, guildId, config);
       return interaction.update(buildConfigPayload(config));
     }
 
@@ -379,7 +379,7 @@ export async function handleArtPollInteraction(interaction, client, pool, { term
     if (customId === 'artpoll_poll_delete') {
       await deleteActivePoll(client, pool, guildId, true);
       config.pollStarted = false;
-      saveArtPollConfig(guildId, config);
+      await saveArtPollConfig(pool, guildId, config);
 
       const payload = await buildPollPayload(pool, config, guildId);
       return interaction.update(payload);
