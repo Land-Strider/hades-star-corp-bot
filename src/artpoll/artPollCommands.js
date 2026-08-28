@@ -377,8 +377,7 @@ export async function handleArtPollInteraction(interaction, client, pool, { term
     }
 
     if (customId === 'artpoll_poll_delete') {
-      await deleteActivePoll(client, pool, guildId);
-
+      await deleteActivePoll(client, pool, guildId, true);
       config.pollStarted = false;
       saveArtPollConfig(guildId, config);
 

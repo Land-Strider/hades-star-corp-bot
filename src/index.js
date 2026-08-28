@@ -11,6 +11,7 @@ import {
   deleteActivePoll,
   createNewArtifactPoll,
   ensureActivePoll,
+  checkAndSnapshotPreClosure,
   getArtPollConfig,
   getAllArtPollConfigs
 } from './artpoll/artPoll.js';
@@ -75,6 +76,12 @@ client.once('clientReady', async () => {
 
   if (modules.artPoll) {
     await ensureActivePoll(client, pool);
+
+    // Scheduled weekly pre-closure vote snapshot: Sunday 02:54 UTC (5 mins prior to closure)
+    cron.schedule('54 2 * * 0', async () => {
+      console.log('📸 UTC Sunday 02:54 - Snapshotting active artifact poll votes...');
+      await checkAndSnapshotPreClosure(client, pool);
+    }, { timezone: 'UTC' });
 
     // Scheduled weekly closure & deletion: Sunday 02:59 UTC across all active guilds
     cron.schedule('59 2 * * 0', async () => {
