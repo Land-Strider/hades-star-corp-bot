@@ -8,6 +8,7 @@ import path from 'path';
 import {
   artPollCommand,
   handleArtPollInteraction,
+  terminateActivePoll,
   deleteActivePoll,
   createNewArtifactPoll,
   ensureActivePoll,
@@ -64,28 +65,36 @@ client.once('clientReady', async () => {
   if (modules.artPoll) {
     await ensureActivePoll(client, pool);
 
-    // Scheduled weekly pre-closure vote snapshot: Sunday 02:54 UTC (5 mins prior to closure)
+    // 1. Scheduled weekly pre-closure vote snapshot: Sunday 02:54 UTC
     cron.schedule('54 2 * * 0', async () => {
       console.log('📸 UTC Sunday 02:54 - Snapshotting active artifact poll votes...');
       await checkAndSnapshotPreClosure(client, pool);
     }, { timezone: 'UTC' });
 
-    // Scheduled weekly closure & deletion: Sunday 02:59 UTC across all active guilds
+    // 2. Scheduled weekly native termination: Sunday 02:58 UTC (Triggers Discord winner banner)
+    cron.schedule('58 2 * * 0', async () => {
+      console.log('🔒 UTC Sunday 02:58 - Natively terminating artifact polls...');
+      await terminateActivePoll(client, pool);
+    }, { timezone: 'UTC' });
+
+    // 3. Scheduled weekly message deletion: Sunday 02:59 UTC (Purges closed poll widget)
     cron.schedule('59 2 * * 0', async () => {
-      console.log('🔒 UTC Sunday 02:59 - Closing active artifact polls...');
+      console.log('🗑️ UTC Sunday 02:59 - Deleting active artifact poll messages...');
       await deleteActivePoll(client, pool);
     }, { timezone: 'UTC' });
 
-    // Scheduled weekly repost: Sunday 03:00 UTC per configured guild
+    // 4. Scheduled weekly repost: Sunday 03:00 UTC (Parallelized repost across guilds)
     cron.schedule('0 3 * * 0', async () => {
       console.log('🚀 UTC Sunday 03:00 - Reposting weekly artifact polls...');
       const configs = await getAllArtPollConfigs(pool);
 
-      for (const [guildId, config] of Object.entries(configs)) {
-        if (!guildId || guildId === 'default') continue;
-        if (!config.enabled || !config.pollStarted || !config.channelId) continue;
-        await createNewArtifactPoll(client, pool, config.channelId, guildId);
-      }
+      await Promise.allSettled(
+        Object.entries(configs).map(async ([guildId, config]) => {
+          if (!guildId || guildId === 'default') return;
+          if (!config.enabled || !config.pollStarted || !config.channelId) return;
+          await createNewArtifactPoll(client, pool, config.channelId, guildId);
+        })
+      );
     }, { timezone: 'UTC' });
   }
 });
