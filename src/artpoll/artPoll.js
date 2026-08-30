@@ -30,59 +30,64 @@ export function getNextSundayClosure() {
   return nextSunday;
 }
 
+// Scheduled at 02:58 UTC - Ends active native poll widget to trigger Discord's winner summary banner
 export async function terminateActivePoll(client, pool, guildId = null) {
   const activeRes = (guildId && guildId !== 'default')
     ? await pool.query(`SELECT * FROM artifact_polls WHERE guild_id = $1 AND is_closed = FALSE`, [guildId])
     : await pool.query(`SELECT * FROM artifact_polls WHERE is_closed = FALSE AND guild_id != 'default'`);
 
-  for (const poll of activeRes.rows) {
-    try {
-      const channel = client.channels.cache.get(poll.channel_id) || await client.channels.fetch(poll.channel_id).catch(() => null);
-      if (channel) {
-        const message = channel.messages.cache.get(poll.message_id) || await channel.messages.fetch(poll.message_id).catch(() => null);
-        if (message && message.poll) {
-          await message.poll.end().catch(() => null);
+  await Promise.allSettled(
+    activeRes.rows.map(async (poll) => {
+      try {
+        const channel = client.channels.cache.get(poll.channel_id) || await client.channels.fetch(poll.channel_id).catch(() => null);
+        if (channel) {
+          const message = channel.messages.cache.get(poll.message_id) || await channel.messages.fetch(poll.message_id).catch(() => null);
+          if (message && message.poll && !message.poll.resultsFinalized) {
+            await message.poll.end().catch(() => null);
+            console.log(`🔒 Natively ended poll #${poll.poll_id}`);
+          }
         }
+      } catch (err) {
+        console.error(`Error terminating poll #${poll.poll_id}:`, err);
       }
-      await pool.query(`UPDATE artifact_polls SET is_closed = TRUE, is_manual = TRUE WHERE poll_id = $1`, [poll.poll_id]);
-      console.log(`⏹️ Terminated poll #${poll.poll_id}`);
-    } catch (err) {
-      console.error(`Error terminating poll #${poll.poll_id}:`, err);
-    }
-  }
+    })
+  );
 }
 
+// Scheduled at 02:59 UTC - Purges old voting card message & marks poll closed in PostgreSQL
 export async function deleteActivePoll(client, pool, guildId = null, isManual = false) {
   const activeRes = (guildId && guildId !== 'default')
     ? await pool.query(`SELECT * FROM artifact_polls WHERE guild_id = $1 AND is_closed = FALSE`, [guildId])
     : await pool.query(`SELECT * FROM artifact_polls WHERE is_closed = FALSE AND guild_id != 'default'`);
 
-  for (const poll of activeRes.rows) {
-    try {
-      if (!poll.is_snapshotted) {
-        await snapshotPollVotes(client, pool, poll);
-      }
+  await Promise.allSettled(
+    activeRes.rows.map(async (poll) => {
+      try {
+        if (!poll.is_snapshotted) {
+          await snapshotPollVotes(client, pool, poll);
+        }
 
-      const channel = client.channels.cache.get(poll.channel_id) || await client.channels.fetch(poll.channel_id).catch(() => null);
-      if (channel) {
-        const message = channel.messages.cache.get(poll.message_id) || await channel.messages.fetch(poll.message_id).catch(() => null);
-        if (message) {
-          if (message.poll) {
-            await message.poll.end().catch(() => null);
-            setTimeout(() => {
-              message.delete().catch(() => null);
-            }, 2500);
-          } else {
+        const channel = client.channels.cache.get(poll.channel_id) || await client.channels.fetch(poll.channel_id).catch(() => null);
+        if (channel) {
+          const message = channel.messages.cache.get(poll.message_id) || await channel.messages.fetch(poll.message_id).catch(() => null);
+          if (message) {
+            if (message.poll && !message.poll.resultsFinalized) {
+              await message.poll.end().catch(() => null);
+            }
             await message.delete().catch(() => null);
           }
         }
+      } catch (err) {
+        console.error(`Error deleting poll #${poll.poll_id}:`, err);
+      } finally {
+        await pool.query(
+          `UPDATE artifact_polls SET is_closed = TRUE, is_manual = $1 WHERE poll_id = $2`,
+          [isManual, poll.poll_id]
+        );
+        console.log(`🗑️ Closed and deleted poll #${poll.poll_id} (is_manual: ${isManual})`);
       }
-      await pool.query(`UPDATE artifact_polls SET is_closed = TRUE, is_manual = $1 WHERE poll_id = $2`, [isManual, poll.poll_id]);
-      console.log(`🗑️ Terminated poll #${poll.poll_id} (is_manual: ${isManual}, deletion scheduled in 2.5s)`);
-    } catch (err) {
-      console.error(`Error deleting poll #${poll.poll_id}:`, err);
-    }
-  }
+    })
+  );
 }
 
 export async function closeActivePolls(client, pool, guildId = null) {
@@ -139,34 +144,41 @@ export async function createNewArtifactPoll(client, pool, channelId, guildId) {
 export async function ensureActivePoll(client, pool) {
   const configs = await getAllArtPollConfigs(pool);
 
-  for (const [guildId, config] of Object.entries(configs)) {
-    if (!guildId || guildId === 'default') continue;
-    if (!config.enabled || !config.pollStarted) continue;
+  const entries = Object.entries(configs).filter(
+    ([guildId, config]) => guildId && guildId !== 'default' && config.enabled && config.pollStarted
+  );
 
-    if (config.statsEnabled) {
-      await ensureStatsTablesExist(pool);
-      await checkAndSnapshotPreClosure(client, pool);
-    }
+  await Promise.allSettled(
+    entries.map(async ([guildId, config]) => {
+      try {
+        if (config.statsEnabled) {
+          await ensureStatsTablesExist(pool);
+          await checkAndSnapshotPreClosure(client, pool);
+        }
 
-    const activeRes = await pool.query(
-      `SELECT * FROM artifact_polls WHERE guild_id = $1 AND is_closed = FALSE`,
-      [guildId]
-    );
+        const activeRes = await pool.query(
+          `SELECT * FROM artifact_polls WHERE guild_id = $1 AND is_closed = FALSE`,
+          [guildId]
+        );
 
-    if (activeRes.rows.length > 0) {
-      const poll = activeRes.rows[0];
-      const channel = client.channels.cache.get(poll.channel_id) || await client.channels.fetch(poll.channel_id).catch(() => null);
-      if (channel) {
-        const message = channel.messages.cache.get(poll.message_id) || await channel.messages.fetch(poll.message_id).catch(() => null);
-        if (message) continue;
+        if (activeRes.rows.length > 0) {
+          const poll = activeRes.rows[0];
+          const channel = client.channels.cache.get(poll.channel_id) || await client.channels.fetch(poll.channel_id).catch(() => null);
+          if (channel) {
+            const message = channel.messages.cache.get(poll.message_id) || await channel.messages.fetch(poll.message_id).catch(() => null);
+            if (message) return;
+          }
+          await pool.query(`UPDATE artifact_polls SET is_closed = TRUE WHERE poll_id = $1`, [poll.poll_id]);
+        }
+
+        if (config.channelId) {
+          await createNewArtifactPoll(client, pool, config.channelId, guildId);
+        }
+      } catch (err) {
+        console.error(`Error in ensureActivePoll for guild ${guildId}:`, err);
       }
-      await pool.query(`UPDATE artifact_polls SET is_closed = TRUE WHERE poll_id = $1`, [poll.poll_id]);
-    }
-
-    if (config.channelId) {
-      await createNewArtifactPoll(client, pool, config.channelId, guildId);
-    }
-  }
+    })
+  );
 }
 
 export async function handleArtPollInteraction(interaction, client, pool) {
