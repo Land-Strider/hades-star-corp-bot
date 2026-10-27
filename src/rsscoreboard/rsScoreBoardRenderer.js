@@ -1,4 +1,5 @@
-import { createCanvas } from '@napi-rs/canvas';
+import fs from 'fs';
+import { createCanvas, loadImage } from '@napi-rs/canvas';
 
 // Fonts come from the font-dejavu and font-noto-emoji Alpine packages installed in the dockerfile
 const FONT = '"DejaVu Sans", "Noto Color Emoji", sans-serif';
@@ -17,6 +18,22 @@ const COLORS = {
   footer: '#ff6a1a'
 };
 const MEDALS = { 1: '#facc15', 2: '#d4d4d8', 3: '#f59e0b' };
+
+// The bot's StarRed application emoji (id 1564626851278626937), bundled so rendering needs no network
+const RED_STAR_ICON_URL = new URL('./assets/red_star.png', import.meta.url);
+let redStarIcon;
+
+async function getRedStarIcon() {
+  if (redStarIcon === undefined) {
+    try {
+      redStarIcon = await loadImage(fs.readFileSync(RED_STAR_ICON_URL));
+    } catch (err) {
+      console.error('[RSScoreBoard] Could not load the StarRed icon, drawing a fallback:', err);
+      redStarIcon = null;
+    }
+  }
+  return redStarIcon;
+}
 
 function formatNumber(num) {
   return Math.round(num || 0).toLocaleString('en-US');
@@ -88,7 +105,12 @@ function drawGlowText(ctx, text, x, y, { font, color = COLORS.text, glow = '#ff2
   ctx.restore();
 }
 
-function drawRedStarIcon(ctx, x, y, radius) {
+function drawRedStarIcon(ctx, x, y, size, icon) {
+  if (icon) {
+    ctx.drawImage(icon, x - size / 2, y - size / 2, size, size);
+    return;
+  }
+  const radius = size / 3;
   const grad = ctx.createRadialGradient(x - radius / 3, y - radius / 3, 1, x, y, radius);
   grad.addColorStop(0, '#ffd27a');
   grad.addColorStop(0.45, '#ff5a1f');
@@ -117,54 +139,22 @@ function fitText(ctx, text, maxWidth) {
   return trimmed + '…';
 }
 
-function drawChip(ctx, x, y, text, color) {
-  ctx.font = `bold 14px ${FONT}`;
-  const width = ctx.measureText(text).width + 24;
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.06)';
-  ctx.beginPath();
-  ctx.roundRect(x, y, width, 30, 15);
-  ctx.fill();
-  ctx.strokeStyle = color;
-  ctx.globalAlpha = 0.7;
-  ctx.lineWidth = 1.5;
-  ctx.stroke();
-  ctx.globalAlpha = 1;
-  ctx.fillStyle = color;
-  ctx.textAlign = 'left';
-  ctx.fillText(text, x + 12, y + 20);
-  return width;
-}
-
 // Event header: number, corp total vs goal, countdown, runs per star type and level
 export async function renderRSSummaryImage(data) {
   const { event, totalCorpPoints, eventGoal, totalRuns, runsByStar, nonEventRunCount, lastNonEventRunAt, nextEvent, now } = data;
 
-  // Lay the run chips out first to know the height
-  const measure = createCanvas(10, 10).getContext('2d');
-  measure.font = `bold 14px ${FONT}`;
-  const chips = [
-    ...runsByStar.map(s => ({ text: `${starLabel(s.dark, s.level)} × ${s.runs}`, color: s.dark ? COLORS.darkRedStar : COLORS.normalStar })),
-    { text: `TOTAL × ${totalRuns}`, color: COLORS.text }
-  ];
-  const lines = [[]];
-  let lineWidth = 0;
-  for (const chip of chips) {
-    chip.width = measure.measureText(chip.text).width + 24;
-    if (lineWidth + chip.width > WIDTH - 120 && lines[lines.length - 1].length > 0) {
-      lines.push([]);
-      lineWidth = 0;
-    }
-    lines[lines.length - 1].push(chip);
-    lineWidth += chip.width + 10;
-  }
-
-  const chipsTop = 262;
-  const height = chipsTop + lines.length * 40 + 50;
+  const runsTop = 250;
+  const height = runsTop + (runsByStar.length > 0 ? 160 : 90) + 40;
   const canvas = createCanvas(WIDTH, height);
   const ctx = canvas.getContext('2d');
   drawBackground(ctx, height, (event?.number || 0) * 7919 + 17);
+  const icon = await getRedStarIcon();
 
   drawGlowText(ctx, 'RED STAR EVENT', WIDTH / 2, 70, { font: `bold 42px ${FONT}` });
+  ctx.font = `bold 42px ${FONT}`;
+  const titleHalf = ctx.measureText('RED STAR EVENT').width / 2;
+  drawRedStarIcon(ctx, WIDTH / 2 - titleHalf - 38, 55, 54, icon);
+  drawRedStarIcon(ctx, WIDTH / 2 + titleHalf + 38, 55, 54, icon);
 
   ctx.fillStyle = COLORS.muted;
   ctx.font = `600 15px ${FONT}`;
@@ -220,15 +210,37 @@ export async function renderRSSummaryImage(data) {
   ctx.fillStyle = COLORS.muted;
   ctx.font = `bold 12px ${FONT}`;
   ctx.textAlign = 'center';
-  ctx.fillText('RUNS COMPLETED', WIDTH / 2, chipsTop - 12);
+  ctx.fillText('RUNS COMPLETED', WIDTH / 2, runsTop);
 
-  lines.forEach((line, i) => {
-    const total = line.reduce((sum, chip) => sum + chip.width, 0) + (line.length - 1) * 10;
-    let x = (WIDTH - total) / 2;
-    for (const chip of line) {
-      x += drawChip(ctx, x, chipsTop + i * 40, chip.text, chip.color) + 10;
-    }
-  });
+  // One column per star type and level: run count in large type above its label
+  let totalTop = runsTop + 20;
+  if (runsByStar.length > 0) {
+    const columnWidth = Math.min(96, (WIDTH - 80) / runsByStar.length);
+    const startX = (WIDTH - columnWidth * runsByStar.length) / 2;
+    runsByStar.forEach((s, i) => {
+      const cx = startX + columnWidth * (i + 0.5);
+      const style = levelStyle(s.dark, s.level);
+      drawGlowText(ctx, `${s.runs}`, cx, runsTop + 44, { font: `bold 30px ${FONT}`, color: style.color, glow: style.glow, blur: style.blur });
+      ctx.fillStyle = s.dark ? COLORS.darkRedStar : COLORS.normalStar;
+      ctx.font = `bold 13px ${FONT}`;
+      ctx.textAlign = 'center';
+      ctx.fillText(starLabel(s.dark, s.level), cx, runsTop + 64);
+    });
+
+    ctx.strokeStyle = 'rgba(165, 156, 196, 0.25)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(WIDTH / 2 - 160, runsTop + 82);
+    ctx.lineTo(WIDTH / 2 + 160, runsTop + 82);
+    ctx.stroke();
+    totalTop = runsTop + 90;
+  }
+
+  drawGlowText(ctx, `${totalRuns}`, WIDTH / 2, totalTop + 38, { font: `bold 36px ${FONT}`, glow: '#ff2a4d', blur: 10 });
+  ctx.fillStyle = COLORS.muted;
+  ctx.font = `bold 13px ${FONT}`;
+  ctx.textAlign = 'center';
+  ctx.fillText('TOTAL RUNS', WIDTH / 2, totalTop + 58);
 
   ctx.fillStyle = '#7c739c';
   ctx.font = `12px ${FONT}`;
@@ -307,11 +319,15 @@ function layoutSegments(ctx, segments, totalPoints, fillWidth) {
     : w - (surplus > 0 ? (deficit * (w - minimum[i])) / surplus : 0)));
 }
 
-// Returns the x position of the requirement marker, or null when the player has no active tier
-function drawProgressBar(ctx, x, y, width, height, player, scale) {
-  const toX = points => x + (Math.min(points, scale) / scale) * width;
+// Each bar is scaled to its own player: the full width is their requirement until they pass it, then
+// their total, so the marker starts at the right end and moves left as they exceed it. Players without
+// an active tier are scaled against the event's top contributor.
+// Returns the x position of the requirement marker, or null when the player has no active tier.
+function drawProgressBar(ctx, x, y, width, height, player, leaderPoints) {
   const required = player.tier?.required || 0;
-  const requiredX = required > 0 ? toX(required) : null;
+  const scale = Math.max(required > 0 ? Math.max(player.totalPoints, required) : leaderPoints, 1);
+  const toX = points => x + (Math.min(points, scale) / scale) * width;
+  const requiredX = required > 0 ? Math.min(toX(required), x + width - 2) : null;
   const fillWidth = toX(player.totalPoints) - x;
 
   ctx.fillStyle = COLORS.track;
@@ -407,7 +423,7 @@ function drawProgressBar(ctx, x, y, width, height, player, scale) {
 }
 
 // One page of up to 10 ranked players
-export async function renderRSRankingPage({ eventNumber, firstRank, players, scale }) {
+export async function renderRSRankingPage({ eventNumber, firstRank, players, leaderPoints }) {
   const headerHeight = 120;
   const rowHeight = 70;
   const footerHeight = 40;
@@ -420,6 +436,7 @@ export async function renderRSRankingPage({ eventNumber, firstRank, players, sca
   const canvas = createCanvas(WIDTH, height);
   const ctx = canvas.getContext('2d');
   drawBackground(ctx, height, (eventNumber || 0) * 104729 + firstRank);
+  const icon = await getRedStarIcon();
 
   const band = ctx.createLinearGradient(0, 0, 0, headerHeight);
   band.addColorStop(0, 'rgba(70, 8, 24, 0.75)');
@@ -431,6 +448,10 @@ export async function renderRSRankingPage({ eventNumber, firstRank, players, sca
   drawGlowText(ctx, 'RED STAR EVENT', WIDTH / 2, 40, { font: `bold 16px ${FONT}`, color: COLORS.muted, glow: '#ff2a4d', blur: 8 });
   const title = `${eventNumber ? `SEASON ${eventNumber} | ` : ''}TOP ${firstRank}-${lastRank}`;
   drawGlowText(ctx, title, WIDTH / 2, 86, { font: `bold 36px ${FONT}` });
+  ctx.font = `bold 36px ${FONT}`;
+  const titleHalf = ctx.measureText(title).width / 2;
+  drawRedStarIcon(ctx, WIDTH / 2 - titleHalf - 32, 73, 44, icon);
+  drawRedStarIcon(ctx, WIDTH / 2 + titleHalf + 32, 73, 44, icon);
 
   if (players.length === 0) {
     ctx.fillStyle = COLORS.muted;
@@ -465,10 +486,10 @@ export async function renderRSRankingPage({ eventNumber, firstRank, players, sca
     const pointsText = formatNumber(player.totalPoints);
     const pointsWidth = ctx.measureText(pointsText).width;
     ctx.fillText(pointsText, pointsRight, top + 31);
-    drawRedStarIcon(ctx, pointsRight - pointsWidth - 16, top + 24, 9);
-    const pointsLeft = pointsRight - pointsWidth - 28;
+    drawRedStarIcon(ctx, pointsRight - pointsWidth - 18, top + 24, 28, icon);
+    const pointsLeft = pointsRight - pointsWidth - 34;
 
-    const requiredX = drawProgressBar(ctx, barX, top + 44, barWidth, 18, player, scale);
+    const requiredX = drawProgressBar(ctx, barX, top + 44, barWidth, 18, player, leaderPoints);
 
     let tierText = '';
     let tierColor = '';

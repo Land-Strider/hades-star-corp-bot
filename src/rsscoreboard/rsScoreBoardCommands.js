@@ -14,6 +14,8 @@ import { renderRSSummaryImage, renderRSRankingPage } from './rsScoreBoardRendere
 import { getEventWindow, getNextEventWindow, isEventWindowActive } from './rsEventSchedule.js';
 
 const PLAYERS_PER_PAGE = 10;
+// The bot's StarRed application emoji
+const RED_STAR_EMOJI = '<:StarRed:1564626851278626937>';
 // Discord allows 10 embeds per message: one summary image + up to 9 ranking pages
 const MAX_RANKING_PAGES = 9;
 
@@ -230,11 +232,11 @@ export async function buildRSBoardMessage(pool, guildId, eventId = null) {
 
   embeds.push(new EmbedBuilder()
     .setColor(0x9b1c31)
-    .setDescription(description)
+    .setDescription(`${RED_STAR_EMOJI} ${description}`)
     .setImage('attachment://rs_summary.png'));
 
-  // Bars share one scale across all pages: the highest of any player's points or requirement
-  const scale = Math.max(1, ...data.players.map(p => Math.max(p.totalPoints, p.tier?.required || 0)));
+  // Players without an active tier have their bar scaled against the top contributor
+  const leaderPoints = Math.max(1, ...data.players.map(p => p.totalPoints));
   const pageCount = Math.min(Math.ceil(data.players.length / PLAYERS_PER_PAGE), MAX_RANKING_PAGES);
 
   for (let page = 0; page < pageCount; page++) {
@@ -244,7 +246,7 @@ export async function buildRSBoardMessage(pool, guildId, eventId = null) {
       eventNumber: data.event?.number,
       firstRank,
       players: data.players.slice(firstRank - 1, firstRank - 1 + PLAYERS_PER_PAGE),
-      scale
+      leaderPoints
     });
     files.push(new AttachmentBuilder(image, { name }));
     embeds.push(new EmbedBuilder().setColor(0x9b1c31).setImage(`attachment://${name}`));
