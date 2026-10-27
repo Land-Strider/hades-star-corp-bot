@@ -1,4 +1,5 @@
 {
   "artPoll": true,
-  "wsRoster": false
+  "wsRoster": false,
+  "rsScoreBoard": true
 }

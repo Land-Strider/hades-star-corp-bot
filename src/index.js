@@ -17,6 +17,13 @@ import {
   getAllArtPollConfigs
 } from './artpoll/artPoll.js';
 
+import {
+  rsScoreBoardCommand,
+  handleRSScoreBoardInteraction,
+  handleRSMessageCreate,
+  ensureRSConfigTableExist
+} from './rsscoreboard/rsScoreBoard.js';
+
 dotenv.config();
 
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
@@ -30,7 +37,7 @@ function getModuleConfig() {
     return JSON.parse(raw);
   } catch (err) {
     console.error('Failed to load modules.json:', err);
-    return { artPoll: true, wsRoster: false };
+    return { artPoll: true, wsRoster: false, rsScoreBoard: true };
   }
 }
 
@@ -40,6 +47,10 @@ async function registerCommands() {
 
   if (modules.artPoll) {
     commands.push(artPollCommand.toJSON());
+  }
+
+  if (modules.rsScoreBoard) {
+    commands.push(rsScoreBoardCommand.toJSON());
   }
 
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
@@ -61,6 +72,10 @@ client.once('clientReady', async () => {
   await registerCommands();
 
   const modules = getModuleConfig();
+
+  if (modules.rsScoreBoard) {
+    await ensureRSConfigTableExist(pool);
+  }
 
   if (modules.artPoll) {
     await ensureActivePoll(client, pool);
@@ -99,18 +114,45 @@ client.once('clientReady', async () => {
   }
 });
 
+client.on('messageCreate', async (message) => {
+  const modules = getModuleConfig();
+  if (!modules.rsScoreBoard) return;
+
+  try {
+    await handleRSMessageCreate(message, client, pool);
+  } catch (err) {
+    console.error('RSScoreBoard message processing error:', err);
+  }
+});
+
 client.on('interactionCreate', async (interaction) => {
   const modules = getModuleConfig();
-  if (!modules.artPoll) return;
 
-  const isArtPollCmd = interaction.isChatInputCommand() && interaction.commandName === 'artpoll';
-  const isArtPollComp = interaction.isMessageComponent() && interaction.customId.startsWith('artpoll_');
+  if (modules.artPoll) {
+    const isArtPollCmd = interaction.isChatInputCommand() && interaction.commandName === 'artpoll';
+    const isArtPollComp = interaction.isMessageComponent() && interaction.customId.startsWith('artpoll_');
 
-  if (isArtPollCmd || isArtPollComp) {
-    try {
-      await handleArtPollInteraction(interaction, client, pool);
-    } catch (err) {
-      console.error('Interaction processing error:', err);
+    if (isArtPollCmd || isArtPollComp) {
+      try {
+        await handleArtPollInteraction(interaction, client, pool);
+        return;
+      } catch (err) {
+        console.error('Interaction processing error:', err);
+      }
+    }
+  }
+
+  if (modules.rsScoreBoard) {
+    const isRSBoardCmd = interaction.isChatInputCommand() && interaction.commandName === 'rsboard';
+    const isRSBoardComp = interaction.isMessageComponent() && interaction.customId.startsWith('rsboard_');
+
+    if (isRSBoardCmd || isRSBoardComp) {
+      try {
+        await handleRSScoreBoardInteraction(interaction, client, pool);
+        return;
+      } catch (err) {
+        console.error('RSScoreBoard interaction error:', err);
+      }
     }
   }
 });
