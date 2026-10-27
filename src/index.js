@@ -21,7 +21,8 @@ import {
   rsScoreBoardCommand,
   handleRSScoreBoardInteraction,
   handleRSMessageCreate,
-  ensureRSConfigTableExist
+  ensureRSConfigTableExist,
+  refreshActiveRSBoards
 } from './rsscoreboard/rsScoreBoard.js';
 
 dotenv.config();
@@ -75,6 +76,15 @@ client.once('clientReady', async () => {
 
   if (modules.rsScoreBoard) {
     await ensureRSConfigTableExist(pool);
+
+    // Keep the countdown on running Corp RS Event boards current between runs
+    cron.schedule('*/15 * * * *', async () => {
+      try {
+        await refreshActiveRSBoards(client, pool);
+      } catch (err) {
+        console.error('RSScoreBoard board refresh error:', err);
+      }
+    }, { timezone: 'UTC' });
   }
 
   if (modules.artPoll) {
@@ -144,7 +154,8 @@ client.on('interactionCreate', async (interaction) => {
 
   if (modules.rsScoreBoard) {
     const isRSBoardCmd = interaction.isChatInputCommand() && interaction.commandName === 'rsboard';
-    const isRSBoardComp = interaction.isMessageComponent() && interaction.customId.startsWith('rsboard_');
+    const isRSBoardComp = (interaction.isMessageComponent() || interaction.isModalSubmit()) &&
+      interaction.customId.startsWith('rsboard_');
 
     if (isRSBoardCmd || isRSBoardComp) {
       try {

@@ -1,5 +1,6 @@
-import { getRSScoreBoardConfig } from './rsScoreBoardConfig.js';
+import { getRSScoreBoardConfig, recordNonEventRun } from './rsScoreBoardConfig.js';
 import { buildRSBoardMessage } from './rsScoreBoardCommands.js';
+import { getEventWindow } from './rsEventSchedule.js';
 
 export { rsScoreBoardCommand, handleRSScoreBoardInteraction } from './rsScoreBoardCommands.js';
 export { getRSScoreBoardConfig, saveRSScoreBoardConfig, ensureRSConfigTableExist } from './rsScoreBoardConfig.js';
@@ -40,6 +41,12 @@ async function extractPayloads(message) {
     }
   }
   return payloads;
+}
+
+// A RedStarEnded export outside a Corp RS Event (RSEventPoints is 0)
+export function isNonEventRun(payload) {
+  return Boolean(payload && payload.EventType === 'RedStarEnded' && payload.StarSystemID &&
+    parseInt(payload.RSEventPoints, 10) === 0);
 }
 
 // Returns a normalized run, or null if the payload is not a scoring RedStarEnded export
@@ -203,8 +210,17 @@ export async function handleRSMessageCreate(message, client, pool) {
 
   const payloads = await extractPayloads(message);
   const eventIds = new Set();
+  let nonEventRuns = 0;
 
   for (const payload of payloads) {
+    if (isNonEventRun(payload)) {
+      const timestamp = payload.Timestamp ? new Date(payload.Timestamp) : new Date();
+      const total = await recordNonEventRun(pool, guildId, isNaN(timestamp.getTime()) ? new Date() : timestamp);
+      nonEventRuns++;
+      console.log(`💤 [RSScoreBoard] Non-event run logged in guild ${guildId} (total ${total})`);
+      continue;
+    }
+
     const run = parseRSRun(payload);
     if (!run) continue;
 
@@ -219,6 +235,7 @@ export async function handleRSMessageCreate(message, client, pool) {
     }
   }
 
+  if (nonEventRuns > 0) await message.react('☑️').catch(() => null);
   if (eventIds.size === 0) return;
 
   await message.react('✅').catch(() => null);
@@ -228,4 +245,24 @@ export async function handleRSMessageCreate(message, client, pool) {
       await queueBoardUpdate(guildId, () => publishRSBoard(client, pool, guildId, eventId, config.displayChannelId));
     }
   }
+}
+
+// Re-renders the boards of events that are running (or ended within the last 20 minutes), so the
+// countdown and final state stay current between runs
+export async function refreshActiveRSBoards(client, pool) {
+  const res = await pool.query(
+    `SELECT DISTINCT ON (e.guild_id) e.guild_id, e.event_id, e.started_at, e.board_message_id, c.display_channel_id
+     FROM rs_events e
+     JOIN rs_scoreboard_configs c ON c.guild_id = e.guild_id
+     WHERE c.enabled = TRUE AND c.display_channel_id <> ''
+     ORDER BY e.guild_id, e.started_at DESC`
+  );
+
+  const now = Date.now();
+  await Promise.allSettled(res.rows.map(row => {
+    const window = getEventWindow(row.started_at);
+    if (!row.board_message_id || now > window.end.getTime() + 20 * 60 * 1000) return null;
+    return queueBoardUpdate(row.guild_id,
+      () => publishRSBoard(client, pool, row.guild_id, row.event_id, row.display_channel_id));
+  }));
 }

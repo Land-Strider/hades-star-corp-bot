@@ -3,6 +3,10 @@ CREATE TABLE IF NOT EXISTS rs_scoreboard_configs (
     channel_id VARCHAR(32) DEFAULT '',
     display_channel_id VARCHAR(32) DEFAULT '',
     enabled BOOLEAN DEFAULT TRUE,
+    event_goal BIGINT DEFAULT 0,
+    tier_requirements JSONB DEFAULT '{}'::jsonb,
+    non_event_run_count INT DEFAULT 0,
+    last_non_event_run_at TIMESTAMP WITH TIME ZONE,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
