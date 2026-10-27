@@ -12,8 +12,8 @@ const COLORS = {
   belowRequirement: '#ff6b6b',
   aboveRequirement: '#ff9f1a',
   redStar: '#f43f5e',
-  darkRedStar: '#ff4d6d',
-  normalStar: '#c084fc',
+  darkRedStar: '#c084fc',
+  normalStar: '#ff4d6d',
   met: '#4ade80',
   footer: '#ff6a1a'
 };
@@ -159,7 +159,7 @@ export async function renderRSSummaryImage(data) {
   ctx.fillStyle = COLORS.muted;
   ctx.font = `600 15px ${FONT}`;
   ctx.textAlign = 'center';
-  const subtitle = event ? `SEASON ${event.number} · ${data.corpName || ''}` : (data.corpName || '');
+  const subtitle = [event ? `SEASON ${event.number}` : '', data.corpName || ''].filter(Boolean).join(' · ');
   ctx.fillText(subtitle.toUpperCase(), WIDTH / 2, 100);
 
   // Corp progress toward the goal
@@ -251,16 +251,16 @@ export async function renderRSSummaryImage(data) {
   return canvas.toBuffer('image/png');
 }
 
-// Level label colors: Dark Red Star in fiery reds, Red Star in violets, brighter and glowing more at higher levels
+// Level label colors: Red Star in fiery reds, Dark Red Star in violets, brighter and glowing more at higher levels
 function levelStyle(dark, level) {
   const t = Math.min(Math.max((level - 7) / 5, 0), 1);
   const mix = (a, b) => Math.round(a + (b - a) * t);
   const [from, to] = dark
-    ? [[214, 128, 128], [255, 70, 40]]
-    : [[178, 160, 214], [205, 120, 255]];
+    ? [[178, 160, 214], [205, 120, 255]]
+    : [[214, 128, 128], [255, 70, 40]];
   return {
     color: `rgb(${mix(from[0], to[0])}, ${mix(from[1], to[1])}, ${mix(from[2], to[2])})`,
-    glow: dark ? '#ff2a00' : '#a020ff',
+    glow: dark ? '#a020ff' : '#ff2a00',
     blur: t * 7
   };
 }
@@ -448,10 +448,6 @@ export async function renderRSRankingPage({ eventNumber, firstRank, players, lea
   drawGlowText(ctx, 'RED STAR EVENT', WIDTH / 2, 40, { font: `bold 16px ${FONT}`, color: COLORS.muted, glow: '#ff2a4d', blur: 8 });
   const title = `${eventNumber ? `SEASON ${eventNumber} | ` : ''}TOP ${firstRank}-${lastRank}`;
   drawGlowText(ctx, title, WIDTH / 2, 86, { font: `bold 36px ${FONT}` });
-  ctx.font = `bold 36px ${FONT}`;
-  const titleHalf = ctx.measureText(title).width / 2;
-  drawRedStarIcon(ctx, WIDTH / 2 - titleHalf - 32, 73, 44, icon);
-  drawRedStarIcon(ctx, WIDTH / 2 + titleHalf + 32, 73, 44, icon);
 
   if (players.length === 0) {
     ctx.fillStyle = COLORS.muted;

@@ -97,8 +97,17 @@ export async function getRSLeaderboardData(pool, guildId, eventId = null) {
   const config = await getRSScoreBoardConfig(pool, guildId);
   const now = new Date();
 
+  // Corp name from this server's latest export, so every server shows its own corp
+  const corpRes = await pool.query(
+    `SELECT corporation_name FROM rs_event_runs
+     WHERE guild_id = $1 AND corporation_name IS NOT NULL
+     ORDER BY timestamp DESC
+     LIMIT 1`,
+    [guildId]
+  );
+
   const base = {
-    corpName: 'Quilliance',
+    corpName: corpRes.rows[0]?.corporation_name || '',
     eventGoal: config.eventGoal,
     nonEventRunCount: config.nonEventRunCount,
     lastNonEventRunAt: config.lastNonEventRunAt,
