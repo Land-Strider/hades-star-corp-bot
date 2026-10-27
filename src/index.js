@@ -154,8 +154,7 @@ client.on('interactionCreate', async (interaction) => {
 
   if (modules.rsScoreBoard) {
     const isRSBoardCmd = interaction.isChatInputCommand() && interaction.commandName === 'rsboard';
-    const isRSBoardComp = (interaction.isMessageComponent() || interaction.isModalSubmit()) &&
-      interaction.customId.startsWith('rsboard_');
+    const isRSBoardComp = interaction.isMessageComponent() && interaction.customId.startsWith('rsboard_');
 
     if (isRSBoardCmd || isRSBoardComp) {
       try {

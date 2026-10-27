@@ -1,7 +1,7 @@
 // Corp RS Events recur every 28 days, from Saturday 00:00 UTC to Sunday 23:59 UTC (48 h).
-// Anchor: the event that started Saturday 2026-10-10 00:00 UTC is Corp RS Event #51.
-const ANCHOR_START_MS = Date.UTC(2026, 9, 10);
-const ANCHOR_EVENT_NUMBER = 51;
+// Events are numbered as seasons. Anchor: Season 57 starts Saturday 2026-11-07 00:00 UTC.
+const ANCHOR_START_MS = Date.UTC(2026, 10, 7);
+const ANCHOR_EVENT_NUMBER = 57;
 const PERIOD_MS = 28 * 24 * 60 * 60 * 1000;
 const DURATION_MS = 48 * 60 * 60 * 1000;
 

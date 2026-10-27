@@ -7,9 +7,6 @@ import {
   ChannelSelectMenuBuilder,
   ChannelType,
   AttachmentBuilder,
-  ModalBuilder,
-  TextInputBuilder,
-  TextInputStyle,
   PermissionFlagsBits
 } from 'discord.js';
 import { getRSScoreBoardConfig, saveRSScoreBoardConfig, tierKey, TIER_LEVELS } from './rsScoreBoardConfig.js';
@@ -19,14 +16,6 @@ import { getEventWindow, getNextEventWindow, isEventWindowActive } from './rsEve
 const PLAYERS_PER_PAGE = 10;
 // Discord allows 10 embeds per message: one summary image + up to 9 ranking pages
 const MAX_RANKING_PAGES = 9;
-
-// Requirement modals: Discord modals hold at most 5 inputs, so each covers 3 levels of one star type
-const REQUIREMENT_GROUPS = {
-  RS_7: { dark: false, levels: [7, 8, 9] },
-  RS_10: { dark: false, levels: [10, 11, 12] },
-  DRS_7: { dark: true, levels: [7, 8, 9] },
-  DRS_10: { dark: true, levels: [10, 11, 12] }
-};
 
 export const rsScoreBoardCommand = new SlashCommandBuilder()
   .setName('rsboard')
@@ -38,7 +27,25 @@ export const rsScoreBoardCommand = new SlashCommandBuilder()
   .addSubcommand(sub =>
     sub.setName('config')
       .setDescription('Open the RS Event Scoreboard configuration menu')
-  );
+  )
+  .addSubcommand(sub => {
+    sub.setName('requirements')
+      .setDescription('Set required contribution points per star tier and the corp event goal (0 = inactive)');
+    for (const dark of [false, true]) {
+      for (const level of TIER_LEVELS) {
+        sub.addStringOption(opt =>
+          opt.setName(tierKey(dark, level).toLowerCase())
+            .setDescription(`${dark ? 'Dark Red Star' : 'Red Star'} ${level} required points per event, e.g. 300000 or 300k`)
+            .setMaxLength(15)
+        );
+      }
+    }
+    return sub.addStringOption(opt =>
+      opt.setName('goal')
+        .setDescription('Corp points wanted per Corp RS Event, e.g. 2500000 or 2.5m')
+        .setMaxLength(15)
+    );
+  });
 
 function starLabel(darkRedStar, starLevel) {
   return `${darkRedStar ? 'DRS' : 'RS'} ${starLevel}`;
@@ -175,7 +182,7 @@ export async function getRSLeaderboardData(pool, guildId, eventId = null) {
 
   const rankedPlayers = [...players.values()]
     .map(p => {
-      const segments = [...p.segments.values()].sort(starOrder);
+      const segments = [...p.segments.values()].sort((a, b) => (b.points - a.points) || starOrder(a, b));
       return {
         playerId: p.playerId,
         playerName: p.playerName,
@@ -214,11 +221,11 @@ export async function buildRSBoardMessage(pool, guildId, eventId = null) {
   const unix = date => Math.floor(date.getTime() / 1000);
   let description;
   if (!data.event) {
-    description = `No Corp RS Event recorded yet. Next event starts <t:${unix(data.nextEvent.start)}:R>.`;
+    description = `No Corp RS Event recorded yet. Season ${data.nextEvent.number} starts <t:${unix(data.nextEvent.start)}:R>.`;
   } else if (data.event.active) {
-    description = `Corp RS Event #${data.event.number} ends <t:${unix(data.event.end)}:R>.`;
+    description = `Corp RS Event Season ${data.event.number} ends <t:${unix(data.event.end)}:R>.`;
   } else {
-    description = `Corp RS Event #${data.event.number} ended <t:${unix(data.event.end)}:f>. Next event starts <t:${unix(data.nextEvent.start)}:R>.`;
+    description = `Corp RS Event Season ${data.event.number} ended <t:${unix(data.event.end)}:f>. Season ${data.nextEvent.number} starts <t:${unix(data.nextEvent.start)}:R>.`;
   }
 
   embeds.push(new EmbedBuilder()
@@ -284,7 +291,7 @@ export function buildRSConfigPayload(config) {
       { name: 'Auto-Post Display Channel (Output)', value: displayChannelText, inline: false },
       { name: 'Required Contribution per Tier (— = inactive)', value: buildRequirementsText(config.tierRequirements || {}), inline: false }
     )
-    .setFooter({ text: 'Players are assigned the tier of the highest active Dark Red Star level they ran, otherwise the highest active Red Star level.' });
+    .setFooter({ text: 'Set tiers and goal with /rsboard requirements. Players get the tier of the highest active Dark Red Star level they ran, otherwise the highest active Red Star level.' });
 
   const apiChannelSelect = new ActionRowBuilder().addComponents(
     new ChannelSelectMenuBuilder()
@@ -312,19 +319,6 @@ export function buildRSConfigPayload(config) {
       )
   );
 
-  const requirementButtons = new ActionRowBuilder().addComponents(
-    ...Object.entries(REQUIREMENT_GROUPS).map(([group, { dark, levels }]) =>
-      new ButtonBuilder()
-        .setCustomId(`rsboard_cfg_req_${group}`)
-        .setLabel(`${dark ? 'DRS' : 'RS'} ${levels[0]}–${levels[levels.length - 1]}`)
-        .setStyle(dark ? ButtonStyle.Danger : ButtonStyle.Primary)
-    ),
-    new ButtonBuilder()
-      .setCustomId('rsboard_cfg_goal')
-      .setLabel('Event Goal')
-      .setStyle(ButtonStyle.Success)
-  );
-
   const actionButtons = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId('rsboard_cfg_toggle')
@@ -342,48 +336,9 @@ export function buildRSConfigPayload(config) {
 
   return {
     embeds: [embed],
-    components: [apiChannelSelect, displayChannelSelect, requirementButtons, actionButtons],
+    components: [apiChannelSelect, displayChannelSelect, actionButtons],
     flags: 64
   };
-}
-
-export function buildRequirementModal(group, tierRequirements) {
-  const { dark, levels } = REQUIREMENT_GROUPS[group];
-
-  const modal = new ModalBuilder()
-    .setCustomId(`rsboard_modal_req_${group}`)
-    .setTitle(`${dark ? 'Dark Red Star' : 'Red Star'} ${levels[0]}–${levels[levels.length - 1]} Requirements`);
-
-  for (const level of levels) {
-    const current = tierRequirements[tierKey(dark, level)];
-    const input = new TextInputBuilder()
-      .setCustomId(tierKey(dark, level))
-      .setLabel(`${starLabel(dark, level)}: required points per event`)
-      .setStyle(TextInputStyle.Short)
-      .setRequired(false)
-      .setMaxLength(15)
-      .setPlaceholder('Empty = inactive. e.g. 300000 or 300k');
-    if (current) input.setValue(String(current));
-    modal.addComponents(new ActionRowBuilder().addComponents(input));
-  }
-
-  return modal;
-}
-
-export function buildGoalModal(eventGoal) {
-  const input = new TextInputBuilder()
-    .setCustomId('event_goal')
-    .setLabel('Corp points wanted per Corp RS Event')
-    .setStyle(TextInputStyle.Short)
-    .setRequired(false)
-    .setMaxLength(15)
-    .setPlaceholder('Empty = no goal. e.g. 2500000 or 2.5m');
-  if (eventGoal) input.setValue(String(eventGoal));
-
-  return new ModalBuilder()
-    .setCustomId('rsboard_modal_goal')
-    .setTitle('Corp RS Event Goal')
-    .addComponents(new ActionRowBuilder().addComponents(input));
 }
 
 function hasConfigPermission(member) {
@@ -420,64 +375,62 @@ export async function handleRSScoreBoardInteraction(interaction, client, pool) {
 
       return interaction.reply(buildRSConfigPayload(config));
     }
-  }
 
-  if (interaction.isModalSubmit()) {
-    if (!hasConfigPermission(interaction.member)) {
-      return interaction.reply({ content: '❌ You require Manage Channels permission to configure RSScoreBoard.', flags: 64 });
-    }
-
-    const invalid = [];
-    const readField = (fieldId, label) => {
-      const value = parsePointsInput(interaction.fields.getTextInputValue(fieldId));
-      if (value === null) invalid.push(label);
-      return value;
-    };
-
-    if (interaction.customId.startsWith('rsboard_modal_req_')) {
-      const group = REQUIREMENT_GROUPS[interaction.customId.replace('rsboard_modal_req_', '')];
-      if (!group) return;
-
-      const tierRequirements = { ...config.tierRequirements };
-      for (const level of group.levels) {
-        const key = tierKey(group.dark, level);
-        const value = readField(key, starLabel(group.dark, level));
-        if (value === null) continue;
-        if (value > 0) tierRequirements[key] = value;
-        else delete tierRequirements[key];
+    if (subcommand === 'requirements') {
+      if (!hasConfigPermission(interaction.member)) {
+        return interaction.reply({
+          content: '❌ You require Manage Channels permission to configure RSScoreBoard.',
+          flags: 64
+        });
       }
+
+      const changed = [];
+      const invalid = [];
+      const tierRequirements = { ...config.tierRequirements };
+
+      for (const dark of [false, true]) {
+        for (const level of TIER_LEVELS) {
+          const key = tierKey(dark, level);
+          const raw = interaction.options.getString(key.toLowerCase());
+          if (raw === null) continue;
+
+          const value = parsePointsInput(raw);
+          if (value === null) {
+            invalid.push(starLabel(dark, level));
+            continue;
+          }
+          if (value > 0) tierRequirements[key] = value;
+          else delete tierRequirements[key];
+          changed.push(`${starLabel(dark, level)}: ${value > 0 ? formatPoints(value) : 'inactive'}`);
+        }
+      }
+
+      const rawGoal = interaction.options.getString('goal');
+      if (rawGoal !== null) {
+        const value = parsePointsInput(rawGoal);
+        if (value === null) {
+          invalid.push('goal');
+        } else {
+          config.eventGoal = value;
+          changed.push(`Event goal: ${value > 0 ? formatPoints(value) : 'not set'}`);
+        }
+      }
+
       config.tierRequirements = tierRequirements;
-    }
+      if (changed.length > 0) await saveRSScoreBoardConfig(pool, guildId, config);
 
-    if (interaction.customId === 'rsboard_modal_goal') {
-      const value = readField('event_goal', 'Event goal');
-      if (value !== null) config.eventGoal = value;
-    }
+      const lines = [];
+      lines.push(changed.length > 0 ? `✅ Updated ${changed.join(' • ')}` : 'ℹ️ No values given. Current settings below.');
+      if (invalid.length > 0) {
+        lines.push(`⚠️ Not a valid number, left unchanged: ${invalid.join(', ')}. Use e.g. \`300000\`, \`300.000\` or \`300k\`.`);
+      }
 
-    await saveRSScoreBoardConfig(pool, guildId, config);
-    await interaction.update(buildRSConfigPayload(config));
-
-    if (invalid.length > 0) {
-      await interaction.followUp({
-        content: `⚠️ Not a valid number, left unchanged: ${invalid.join(', ')}. Use e.g. \`300000\`, \`300.000\` or \`300k\`.`,
-        flags: 64
-      });
+      return interaction.reply({ ...buildRSConfigPayload(config), content: lines.join('\n') });
     }
-    return;
   }
 
   if (interaction.isMessageComponent()) {
     const { customId } = interaction;
-
-    if (customId.startsWith('rsboard_cfg_req_')) {
-      const group = customId.replace('rsboard_cfg_req_', '');
-      if (!REQUIREMENT_GROUPS[group]) return;
-      return interaction.showModal(buildRequirementModal(group, config.tierRequirements));
-    }
-
-    if (customId === 'rsboard_cfg_goal') {
-      return interaction.showModal(buildGoalModal(config.eventGoal));
-    }
 
     if (customId === 'rsboard_cfg_toggle') {
       config.enabled = !config.enabled;
