@@ -194,7 +194,7 @@ client.on('interactionCreate', async (interaction) => {
 
   if (modules.quantumScheduler) {
     const isQSCmd = (interaction.isChatInputCommand() || interaction.isAutocomplete()) && interaction.commandName === 'quantum';
-    const isQSComp = interaction.isMessageComponent() && interaction.customId.startsWith('quantum_');
+    const isQSComp = (interaction.isMessageComponent() || interaction.isModalSubmit()) && interaction.customId.startsWith('quantum_');
 
     if (isQSCmd || isQSComp) {
       try {

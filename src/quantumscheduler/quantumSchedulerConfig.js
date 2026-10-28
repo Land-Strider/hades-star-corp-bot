@@ -1,6 +1,10 @@
 export const DEFAULT_QS_CONFIG = {
   channelId: '',
-  enabled: true
+  enabled: true,
+  eventTimeMinutes: null,
+  // Where members may use the commands ('' = anywhere) and who may use set/remove ([] = everyone). Admins bypass both.
+  commandChannelId: '',
+  allowedRoleIds: []
 };
 
 let tableInitialized = false;
@@ -17,6 +21,18 @@ export async function ensureQSTablesExist(pool) {
       board_message_id VARCHAR(32) DEFAULT '',
       updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
     );
+  `);
+
+  // Time of day (UTC minutes) the 24 h corp event starts and ends; the day itself isn't known
+  await pool.query(`
+    ALTER TABLE quantum_scheduler_configs
+    ADD COLUMN IF NOT EXISTS event_time_minutes SMALLINT CHECK (event_time_minutes BETWEEN 0 AND 1439);
+  `);
+
+  await pool.query(`
+    ALTER TABLE quantum_scheduler_configs
+    ADD COLUMN IF NOT EXISTS command_channel_id VARCHAR(32) DEFAULT '',
+    ADD COLUMN IF NOT EXISTS allowed_role_ids TEXT[] DEFAULT '{}';
   `);
 
   // One row per Discord member who used the scheduler. default_names are reused when /set gets no names.
@@ -67,7 +83,10 @@ export async function getQSConfig(pool, guildId) {
     channelId: row.channel_id || '',
     enabled: row.enabled ?? true,
     boardChannelId: row.board_channel_id || '',
-    boardMessageId: row.board_message_id || ''
+    boardMessageId: row.board_message_id || '',
+    eventTimeMinutes: row.event_time_minutes ?? null,
+    commandChannelId: row.command_channel_id || '',
+    allowedRoleIds: row.allowed_role_ids || []
   };
 }
 
@@ -78,13 +97,17 @@ export async function saveQSConfig(pool, guildId, config) {
 
   const merged = { ...DEFAULT_QS_CONFIG, ...config };
   await pool.query(
-    `INSERT INTO quantum_scheduler_configs (guild_id, channel_id, enabled, updated_at)
-     VALUES ($1, $2, $3, NOW())
+    `INSERT INTO quantum_scheduler_configs
+       (guild_id, channel_id, enabled, event_time_minutes, command_channel_id, allowed_role_ids, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, NOW())
      ON CONFLICT (guild_id) DO UPDATE SET
-       channel_id = EXCLUDED.channel_id,
-       enabled    = EXCLUDED.enabled,
-       updated_at = NOW()`,
-    [guildId, merged.channelId, merged.enabled]
+       channel_id         = EXCLUDED.channel_id,
+       enabled            = EXCLUDED.enabled,
+       event_time_minutes = EXCLUDED.event_time_minutes,
+       command_channel_id = EXCLUDED.command_channel_id,
+       allowed_role_ids   = EXCLUDED.allowed_role_ids,
+       updated_at         = NOW()`,
+    [guildId, merged.channelId, merged.enabled, merged.eventTimeMinutes, merged.commandChannelId, merged.allowedRoleIds]
   );
 }
 
@@ -261,6 +284,12 @@ export async function getQSScheduleData(pool, guildId) {
     .sort((a, b) => (new Date(a.createdAt) - new Date(b.createdAt)) || a.userId.localeCompare(b.userId))
     .forEach((member, i) => { member.colorIndex = i; });
 
+  // Solo members (no alts) get their own name colour instead, so their hours are easy to follow across slots
+  [...members.values()]
+    .filter(m => !m.hasAlts)
+    .sort((a, b) => (new Date(a.createdAt) - new Date(b.createdAt)) || a.userId.localeCompare(b.userId))
+    .forEach((member, i) => { member.soloColorIndex = i; });
+
   const columns = Array.from({ length: 24 }, (_, hour) => ({ hour, entries: [], people: 0, accounts: 0 }));
   for (const row of res.rows) {
     const member = members.get(row.user_id);
@@ -272,11 +301,17 @@ export async function getQSScheduleData(pool, guildId) {
       names,
       main: member.main,
       hasAlts: member.hasAlts,
-      colorIndex: member.colorIndex ?? 0
+      colorIndex: member.colorIndex ?? 0,
+      soloColorIndex: member.soloColorIndex ?? 0
     });
     column.people++;
     column.accounts += names.length;
   }
+
+  // Stacking order from the line up: members with several accounts in the slot, then members who have alts but
+  // only one account in this slot (still boxed), then solo accounts. Sort is stable, so names stay alphabetical.
+  const stackTier = entry => (!entry.hasAlts ? 2 : entry.names.length > 1 ? 0 : 1);
+  for (const column of columns) column.entries.sort((a, b) => stackTier(a) - stackTier(b));
 
   const accountKeys = new Set();
   for (const member of members.values()) {

@@ -5,7 +5,11 @@ import {
   ButtonBuilder,
   ButtonStyle,
   ChannelSelectMenuBuilder,
+  RoleSelectMenuBuilder,
   ChannelType,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
   PermissionFlagsBits
 } from 'discord.js';
 import {
@@ -33,7 +37,8 @@ import {
   groupHourRanges,
   formatMinutes,
   formatHour,
-  formatUtcRange
+  formatUtcRange,
+  parseEventInput
 } from './quantumSchedulerTime.js';
 
 const MAX_NAME_LENGTH = 32;
@@ -110,9 +115,28 @@ export const quantumSchedulerCommand = new SlashCommandBuilder()
       )
   );
 
-function hasConfigPermission(member) {
-  return member.permissions.has(PermissionFlagsBits.ManageChannels) ||
-    member.permissions.has(PermissionFlagsBits.Administrator);
+// Config and removing other members' hours are for server admins only, whatever their roles are called
+function isServerAdmin(member) {
+  return member?.permissions?.has(PermissionFlagsBits.Administrator) === true;
+}
+
+const ADMIN_ONLY = '❌ Only server admins (Administrator permission) can do this.';
+
+function memberRoleIds(member) {
+  if (!member?.roles) return [];
+  return Array.isArray(member.roles) ? member.roles : [...member.roles.cache.keys()];
+}
+
+// set/remove: admins, or members with one of the configured roles (no roles configured = everyone)
+function canSetSchedule(member, config) {
+  if (isServerAdmin(member) || config.allowedRoleIds.length === 0) return true;
+  return memberRoleIds(member).some(id => config.allowedRoleIds.includes(id));
+}
+
+// Commands run only in the configured channel or its threads (none configured = anywhere); admins anywhere
+function inCommandChannel(interaction, config) {
+  if (!config.commandChannelId || isServerAdmin(interaction.member)) return true;
+  return interaction.channelId === config.commandChannelId || interaction.channel?.parentId === config.commandChannelId;
 }
 
 function attachAutoClose(interaction, response, timeoutLabel) {
@@ -311,9 +335,9 @@ async function handleRemove(interaction, client, pool) {
   const target = interaction.options.getUser('member');
   const targetId = target?.id || interaction.user.id;
 
-  if (targetId !== interaction.user.id && !hasConfigPermission(interaction.member)) {
+  if (targetId !== interaction.user.id && !isServerAdmin(interaction.member)) {
     return interaction.reply({
-      content: '❌ You require Manage Channels permission to remove another member\'s hours.',
+      content: '❌ Only server admins (Administrator permission) can remove another member\'s hours.',
       flags: 64
     });
   }
@@ -350,6 +374,81 @@ async function handleRemove(interaction, client, pool) {
   if (removed > 0) queueQSBoardUpdate(client, pool, guildId);
 }
 
+// The event lasts 24 h, so its start and end share one time of day. Only that time is known, not the day.
+function describeEventTime(minutes) {
+  if (minutes === null || minutes === undefined) return '*Not set*';
+  const now = Date.now();
+  const today = Date.UTC(new Date(now).getUTCFullYear(), new Date(now).getUTCMonth(), new Date(now).getUTCDate()) + minutes * 60_000;
+  const next = Math.floor((today > now ? today : today + 86_400_000) / 1000);
+  return `${formatMinutes(minutes)} UTC (your time <t:${next}:t>)`;
+}
+
+// Discord form for the event time. A blank field keeps the current value, "-" clears it.
+function buildEventModal(config, zone) {
+  const offset = getOffsetMinutes(zone);
+  const minutes = config.eventTimeMinutes;
+  const current = minutes === null
+    ? 'Not set'
+    : `${formatMinutes(utcToLocalMinutes(minutes, offset))} local = ${formatMinutes(minutes)} UTC`;
+
+  return new ModalBuilder()
+    .setCustomId('quantum_cfg_event_modal')
+    .setTitle('Event Time (start = end, 24 h event)')
+    .addComponents(
+      new ActionRowBuilder().addComponents(new TextInputBuilder()
+        .setCustomId('event_time')
+        .setLabel('Local hh:mm or countdown e.g. 10h27m')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(false)
+        .setMaxLength(20)
+        .setPlaceholder(`Now: ${current}. Blank keeps, - clears`.slice(0, 100))),
+      new ActionRowBuilder().addComponents(new TextInputBuilder()
+        .setCustomId('event_timezone')
+        .setLabel('Your timezone (for hh:mm times)')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(false)
+        .setMaxLength(64)
+        .setValue(zone)
+        .setPlaceholder('e.g. Europe/Istanbul or UTC+3'))
+    );
+}
+
+async function handleEventModal(interaction, client, pool) {
+  const guildId = interaction.guildId;
+  await interaction.deferUpdate();
+
+  const config = await getQSConfig(pool, guildId);
+  const member = await getQSMember(pool, guildId, interaction.user.id);
+  const typedZone = interaction.fields.getTextInputValue('event_timezone').trim();
+  const zone = typedZone ? normalizeTimeZone(typedZone) : (member?.timeZone || 'UTC');
+  const notices = [];
+
+  if (!zone) {
+    notices.push(`❌ Unknown timezone \`${typedZone}\`. Nothing changed. Use e.g. \`Europe/Berlin\` or \`UTC+3\`.`);
+  } else {
+    const raw = interaction.fields.getTextInputValue('event_time').trim();
+    const parsed = raw ? parseEventInput(raw, getOffsetMinutes(zone)) : undefined;
+    if (parsed === null) {
+      notices.push(`⚠️ Couldn't read \`${raw}\`, event time left unchanged. Use \`14:30\`, \`10h27m\` or \`-\` to clear.`);
+    } else if (parsed?.clear) {
+      config.eventTimeMinutes = null;
+      notices.push('🗑️ Event time cleared.');
+    } else if (parsed) {
+      // A countdown or local time is kept only as its UTC time of day
+      config.eventTimeMinutes = parsed.getUTCHours() * 60 + parsed.getUTCMinutes();
+      notices.push(`✅ Event time: **${formatMinutes(config.eventTimeMinutes)} UTC**.`);
+    }
+
+    await saveQSConfig(pool, guildId, config);
+    if (typedZone && zone !== member?.timeZone) {
+      await saveQSMember(pool, guildId, interaction.user.id, { displayName: memberDisplayName(interaction), timeZone: zone, mainName: null });
+    }
+    if (notices.length > 0 && config.enabled && config.channelId) await queueQSBoardUpdate(client, pool, guildId);
+  }
+
+  return interaction.editReply(await buildQSConfigPayload(pool, guildId, config, notices.join('\n') || 'ℹ️ No event time given.'));
+}
+
 export async function buildQSConfigPayload(pool, guildId, config, notice = '') {
   const { stats } = await getQSScheduleData(pool, guildId);
   const channelText = config.channelId ? `<#${config.channelId}>` : '*None (no board posted)*';
@@ -372,6 +471,17 @@ export async function buildQSConfigPayload(pool, guildId, config, notice = '') {
       },
       { name: 'Game Accounts', value: `🎮 ${stats.accounts} (${stats.peopleWithAlts} member(s) with alts)`, inline: true },
       { name: 'Average Hours per Member', value: `⏱ ${stats.avgSlots.toFixed(1)}`, inline: true },
+      { name: 'Event Time (start/end)', value: describeEventTime(config.eventTimeMinutes), inline: true },
+      {
+        name: 'Command Channel',
+        value: config.commandChannelId ? `<#${config.commandChannelId}> (and its threads)` : '*Any channel*',
+        inline: true
+      },
+      {
+        name: 'Set/Remove Roles',
+        value: config.allowedRoleIds.length > 0 ? config.allowedRoleIds.map(id => `<@&${id}>`).join(', ') : '*Everyone*',
+        inline: true
+      },
       {
         name: 'Busiest Hours (UTC)',
         value: stats.busiest.length === 0
@@ -381,20 +491,37 @@ export async function buildQSConfigPayload(pool, guildId, config, notice = '') {
         inline: false
       }
     )
-    .setFooter({ text: 'The board is re-rendered after every change and every 15 minutes. Forum posts are threads: pick the post itself.' });
+    .setFooter({ text: 'Config and removing other members\' hours: server admins only. Admins bypass the channel and role limits. The board is re-rendered after every change and every 15 minutes.' });
 
-  const channelSelect = new ActionRowBuilder().addComponents(
-    new ChannelSelectMenuBuilder()
-      .setCustomId('quantum_cfg_channel')
-      .setPlaceholder('Select the board output channel, thread or post')
-      .setChannelTypes(
-        ChannelType.GuildText,
-        ChannelType.PublicThread,
-        ChannelType.PrivateThread,
-        ChannelType.GuildAnnouncement,
-        ChannelType.AnnouncementThread
-      )
-  );
+  const textChannelTypes = [
+    ChannelType.GuildText,
+    ChannelType.PublicThread,
+    ChannelType.PrivateThread,
+    ChannelType.GuildAnnouncement,
+    ChannelType.AnnouncementThread
+  ];
+
+  const outputSelect = new ChannelSelectMenuBuilder()
+    .setCustomId('quantum_cfg_channel')
+    .setPlaceholder('Board output channel, thread or post')
+    .setChannelTypes(...textChannelTypes);
+  if (config.channelId) outputSelect.setDefaultChannels(config.channelId);
+
+  // min 0 so emptying the selection clears the limit
+  const commandChannelSelect = new ChannelSelectMenuBuilder()
+    .setCustomId('quantum_cfg_cmd_channel')
+    .setPlaceholder('Command channel (empty = any channel)')
+    .setChannelTypes(...textChannelTypes)
+    .setMinValues(0)
+    .setMaxValues(1);
+  if (config.commandChannelId) commandChannelSelect.setDefaultChannels(config.commandChannelId);
+
+  const roleSelect = new RoleSelectMenuBuilder()
+    .setCustomId('quantum_cfg_roles')
+    .setPlaceholder('Roles allowed to set/remove hours (empty = everyone)')
+    .setMinValues(0)
+    .setMaxValues(10);
+  if (config.allowedRoleIds.length > 0) roleSelect.setDefaultRoles(...config.allowedRoleIds);
 
   const actionButtons = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
@@ -406,6 +533,10 @@ export async function buildQSConfigPayload(pool, guildId, config, notice = '') {
       .setLabel('Post / Refresh Board')
       .setStyle(ButtonStyle.Primary)
       .setDisabled(!config.enabled || !config.channelId),
+    new ButtonBuilder()
+      .setCustomId('quantum_cfg_event')
+      .setLabel('Set Event Time')
+      .setStyle(ButtonStyle.Primary),
     new ButtonBuilder()
       .setCustomId('quantum_cfg_clear')
       .setLabel('Clear Output Channel')
@@ -419,7 +550,12 @@ export async function buildQSConfigPayload(pool, guildId, config, notice = '') {
   return {
     content: notice,
     embeds: [embed],
-    components: [channelSelect, actionButtons],
+    components: [
+      new ActionRowBuilder().addComponents(outputSelect),
+      new ActionRowBuilder().addComponents(commandChannelSelect),
+      new ActionRowBuilder().addComponents(roleSelect),
+      actionButtons
+    ],
     flags: 64
   };
 }
@@ -441,28 +577,35 @@ export async function handleQuantumSchedulerInteraction(interaction, client, poo
 
   if (interaction.isChatInputCommand()) {
     const subcommand = interaction.options.getSubcommand();
+    const config = await getQSConfig(pool, guildId);
+
+    if (subcommand === 'config') {
+      if (!isServerAdmin(interaction.member)) return interaction.reply({ content: ADMIN_ONLY, flags: 64 });
+      const response = await interaction.reply(await buildQSConfigPayload(pool, guildId, config));
+      attachAutoClose(interaction, response, 'Configuration menu');
+      return;
+    }
+
+    if (!inCommandChannel(interaction, config)) {
+      return interaction.reply({ content: `❌ Quantum Scheduler commands can only be used in <#${config.commandChannelId}>.`, flags: 64 });
+    }
 
     if (subcommand === 'view') {
       await interaction.deferReply();
       return interaction.editReply(await buildQSBoardMessage(pool, interaction.guild));
     }
 
+    if (!canSetSchedule(interaction.member, config)) {
+      const roles = config.allowedRoleIds.map(id => `<@&${id}>`).join(', ');
+      return interaction.reply({
+        content: `❌ Setting and removing hours is limited to: ${roles}.`,
+        flags: 64,
+        allowedMentions: { parse: [] }
+      });
+    }
+
     if (subcommand === 'set') return handleSet(interaction, client, pool);
     if (subcommand === 'remove') return handleRemove(interaction, client, pool);
-
-    if (subcommand === 'config') {
-      if (!hasConfigPermission(interaction.member)) {
-        return interaction.reply({
-          content: '❌ You require Manage Channels permission to configure the Quantum Scheduler.',
-          flags: 64
-        });
-      }
-
-      const config = await getQSConfig(pool, guildId);
-      const response = await interaction.reply(await buildQSConfigPayload(pool, guildId, config));
-      attachAutoClose(interaction, response, 'Configuration menu');
-      return;
-    }
   }
 
   if (interaction.isMessageComponent()) {
@@ -476,11 +619,14 @@ export async function handleQuantumSchedulerInteraction(interaction, client, poo
       });
     }
 
-    if (!hasConfigPermission(interaction.member)) {
-      return interaction.reply({
-        content: '❌ You require Manage Channels permission to configure the Quantum Scheduler.',
-        flags: 64
-      });
+    if (!isServerAdmin(interaction.member)) return interaction.reply({ content: ADMIN_ONLY, flags: 64 });
+
+    if (customId === 'quantum_cfg_event') {
+      const [config, member] = await Promise.all([
+        getQSConfig(pool, guildId),
+        getQSMember(pool, guildId, interaction.user.id)
+      ]);
+      return interaction.showModal(buildEventModal(config, member?.timeZone || 'UTC'));
     }
 
     // Rendering and posting the board can take longer than Discord's 3 s reply window
@@ -507,8 +653,25 @@ export async function handleQuantumSchedulerInteraction(interaction, client, poo
       config.channelId = '';
       await saveQSConfig(pool, guildId, config);
       notice = 'Output channel cleared. The last posted board stays but is no longer updated.';
+    } else if (customId === 'quantum_cfg_cmd_channel') {
+      config.commandChannelId = interaction.values[0] || '';
+      await saveQSConfig(pool, guildId, config);
+      notice = config.commandChannelId
+        ? `🔒 Commands now only work in <#${config.commandChannelId}> (and its threads). Admins can use them anywhere.`
+        : '🔓 Commands work in any channel again.';
+    } else if (customId === 'quantum_cfg_roles') {
+      config.allowedRoleIds = [...interaction.values];
+      await saveQSConfig(pool, guildId, config);
+      notice = config.allowedRoleIds.length > 0
+        ? `🔒 Set/remove limited to ${config.allowedRoleIds.map(id => `<@&${id}>`).join(', ')} (and admins).`
+        : '🔓 Everyone can set and remove their own hours again.';
     }
 
     return interaction.editReply(await buildQSConfigPayload(pool, guildId, await getQSConfig(pool, guildId), notice));
+  }
+
+  if (interaction.isModalSubmit() && interaction.customId === 'quantum_cfg_event_modal') {
+    if (!isServerAdmin(interaction.member)) return interaction.reply({ content: ADMIN_ONLY, flags: 64 });
+    return handleEventModal(interaction, client, pool);
   }
 }

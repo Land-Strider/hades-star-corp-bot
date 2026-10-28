@@ -7,8 +7,13 @@ const boardUpdateQueues = new Map();
 
 // The image alone, so Discord shows it at full message width (an embed would shrink it)
 export async function buildQSBoardMessage(pool, guild) {
-  const data = await getQSScheduleData(pool, guild.id);
-  const image = await renderQSTimeline({ ...data, guildName: guild.name, now: new Date() });
+  const [data, config] = await Promise.all([getQSScheduleData(pool, guild.id), getQSConfig(pool, guild.id)]);
+  const image = await renderQSTimeline({
+    ...data,
+    guildName: guild.name,
+    eventTimeMinutes: config.eventTimeMinutes,
+    now: new Date()
+  });
   return { content: '', embeds: [], files: [new AttachmentBuilder(image, { name: 'quantum_schedule.png' })] };
 }
 

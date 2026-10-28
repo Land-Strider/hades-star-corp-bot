@@ -157,6 +157,27 @@ export function parseLocalTime(input) {
   return hours * 60 + minutes;
 }
 
+// Event moment from admin input: a countdown as shown in game ("10h27m", "2d 10h", "45m", "in 3h")
+// or a local time of day ("14:30", "2pm"), meaning its next occurrence.
+// Returns { clear: true } for "-", a Date, or null when the input can't be read.
+export function parseEventInput(input, offsetMinutes, now = new Date()) {
+  const text = (input || '').trim().toLowerCase();
+  if (['-', 'clear', 'none', 'off', '0'].includes(text)) return { clear: true };
+
+  const countdown = text.replace(/\s+/g, '').match(/^(?:in)?(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m(?:in)?)?$/);
+  if (countdown && (countdown[1] || countdown[2] || countdown[3])) {
+    const [, days = '0', hours = '0', minutes = '0'] = countdown;
+    const ms = ((parseInt(days, 10) * 24 + parseInt(hours, 10)) * 60 + parseInt(minutes, 10)) * 60_000;
+    return new Date(now.getTime() + ms);
+  }
+
+  const local = parseLocalTime(text);
+  if (local === null) return null;
+  const utcMinutes = localToUtcMinutes(local, offsetMinutes);
+  const today = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) + utcMinutes * 60_000;
+  return new Date(today > now.getTime() ? today : today + MINUTES_PER_DAY * 60_000);
+}
+
 export function localToUtcMinutes(localMinutes, offsetMinutes) {
   return mod(localMinutes - offsetMinutes, MINUTES_PER_DAY);
 }
