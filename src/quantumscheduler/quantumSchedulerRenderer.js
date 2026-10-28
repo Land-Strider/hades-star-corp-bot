@@ -21,10 +21,30 @@ const COLORS = {
   muted: '#8fa3c7',
   line: '#e6ecf7',
   guide: 'rgba(148, 163, 214, 0.08)',
-  group: '#a855f7',
-  main: '#fb923c',
   now: '#22d3ee'
 };
+
+// Box colours per member with alts: [member's group box, main account box]. Cyan stays reserved for the current hour.
+const GROUP_PALETTE = [
+  ['#a855f7', '#fb923c'],
+  ['#3b82f6', '#facc15'],
+  ['#22c55e', '#f472b6'],
+  ['#ef4444', '#a3e635'],
+  ['#e879f9', '#34d399'],
+  ['#f59e0b', '#818cf8'],
+  ['#14b8a6', '#fb7185'],
+  ['#94a3b8', '#fde047']
+];
+
+function groupColors(index) {
+  const [group, main] = GROUP_PALETTE[index % GROUP_PALETTE.length];
+  return { group, main };
+}
+
+function withAlpha(hex, alpha) {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${n >> 16}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+}
 
 // Deterministic PRNG so the starfield doesn't change between edits of the same board
 function seededRandom(seed) {
@@ -127,11 +147,12 @@ function drawColumn(ctx, layout, colX, lineY) {
     const top = bottom - height;
 
     // One member's accounts are boxed together; their main account gets its own highlight
+    const colors = groupColors(entry.colorIndex || 0);
     if (entry.hasAlts) {
-      ctx.fillStyle = 'rgba(168, 85, 247, 0.12)';
+      ctx.fillStyle = withAlpha(colors.group, 0.12);
       roundRect(ctx, colX + 5, top, COL_W - 10, height, 7);
       ctx.fill();
-      ctx.strokeStyle = COLORS.group;
+      ctx.strokeStyle = colors.group;
       ctx.lineWidth = 2;
       ctx.stroke();
     }
@@ -142,10 +163,10 @@ function drawColumn(ctx, layout, colX, lineY) {
       const rowCenter = rowBottom - ROW_H / 2;
 
       if (entry.hasAlts && name === entry.main) {
-        ctx.fillStyle = 'rgba(251, 146, 60, 0.16)';
+        ctx.fillStyle = withAlpha(colors.main, 0.16);
         roundRect(ctx, colX + 9, rowBottom - ROW_H + 2, COL_W - 18, ROW_H - 4, 5);
         ctx.fill();
-        ctx.strokeStyle = COLORS.main;
+        ctx.strokeStyle = colors.main;
         ctx.lineWidth = 2;
         ctx.stroke();
       }
@@ -215,7 +236,7 @@ export async function renderQSTimeline(data) {
   ctx.textAlign = 'right';
   ctx.fillStyle = COLORS.text;
   ctx.font = `bold 24px ${FONT}`;
-  ctx.fillText(`👤 ${stats.people} members   🎮 ${stats.accounts} accounts   ⏱ ${stats.avgSlots.toFixed(1)} h avg`, WIDTH - PAD_X, 70);
+  ctx.fillText(`👤 ${stats.people} members   🎮 ${stats.accounts} accounts   ⌀ ${stats.avgPeoplePerHour.toFixed(1)} members/hour`, WIDTH - PAD_X, 70);
   ctx.fillStyle = COLORS.muted;
   ctx.font = `20px ${FONT}`;
   const nowText = `${String(now.getUTCHours()).padStart(2, '0')}:${String(now.getUTCMinutes()).padStart(2, '0')}`;
@@ -305,12 +326,27 @@ export async function renderQSTimeline(data) {
   // Legend
   let legendX = PAD_X;
   const legendY = height - 34;
-  legendX = drawLegendSwatch(ctx, legendX, legendY, { fill: 'rgba(168, 85, 247, 0.12)', stroke: COLORS.group }, 'One member\'s accounts');
-  legendX = drawLegendSwatch(ctx, legendX, legendY, { fill: 'rgba(251, 146, 60, 0.16)', stroke: COLORS.main }, 'Main account');
+  const [firstGroup, firstMain] = GROUP_PALETTE[0];
+  legendX = drawLegendSwatch(ctx, legendX, legendY, { fill: withAlpha(firstGroup, 0.12), stroke: firstGroup }, 'One member\'s accounts (colour per member)');
+  legendX = drawLegendSwatch(ctx, legendX, legendY, { fill: withAlpha(firstMain, 0.16), stroke: firstMain }, 'Main account');
   legendX = drawLegendSwatch(ctx, legendX, legendY, { gradient: true }, 'Current hour');
   ctx.fillStyle = COLORS.muted;
   ctx.font = `16px ${FONT}`;
   ctx.fillText('👤 members · 🎮 game accounts per hour', legendX, legendY + 1);
+
+  // The one instruction the board needs, in the empty bottom-right corner
+  ctx.textAlign = 'right';
+  const command = '/quantum scheduler set';
+  ctx.font = `bold 18px ${FONT}`;
+  const boldWidth = ctx.measureText(command).width;
+  roundRect(ctx, WIDTH - PAD_X - boldWidth - 16, legendY - 15, boldWidth + 16, 32, 6);
+  ctx.fillStyle = 'rgba(34, 211, 238, 0.14)';
+  ctx.fill();
+  ctx.fillStyle = COLORS.now;
+  ctx.fillText(command, WIDTH - PAD_X - 8, legendY + 1);
+  ctx.fillStyle = COLORS.muted;
+  ctx.font = `18px ${FONT}`;
+  ctx.fillText('Add your hours (in your own timezone) with', WIDTH - PAD_X - boldWidth - 28, legendY + 1);
 
   return canvas.encode('png');
 }

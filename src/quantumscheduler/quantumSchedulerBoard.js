@@ -1,32 +1,15 @@
-import { EmbedBuilder, AttachmentBuilder } from 'discord.js';
+import { AttachmentBuilder } from 'discord.js';
 import { getQSConfig, getAllQSConfigs, getQSScheduleData, saveQSBoardMessage } from './quantumSchedulerConfig.js';
 import { renderQSTimeline } from './quantumSchedulerRenderer.js';
-import { formatHour } from './quantumSchedulerTime.js';
 
 // Serializes board edits per guild so concurrent /set calls and the refresh cron never post duplicate boards
 const boardUpdateQueues = new Map();
 
+// The image alone, so Discord shows it at full message width (an embed would shrink it)
 export async function buildQSBoardMessage(pool, guild) {
   const data = await getQSScheduleData(pool, guild.id);
-  const now = new Date();
-  const image = await renderQSTimeline({ ...data, guildName: guild.name, now });
-
-  const hour = now.getUTCHours();
-  const slotStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), hour) / 1000;
-  const current = data.columns[hour];
-
-  const embed = new EmbedBuilder()
-    .setColor(0x22d3ee)
-    .setDescription([
-      `🕒 Current slot **${formatHour(hour)}–${formatHour((hour + 1) % 24)} UTC** (your time <t:${slotStart}:t> – <t:${slotStart + 3600}:t>): ` +
-        `👤 ${current.people} member(s), 🎮 ${current.accounts} account(s).`,
-      'Add your hours with `/quantum scheduler set`. Times you enter in your own timezone are converted to UTC.'
-    ].join('\n'))
-    .setImage('attachment://quantum_schedule.png')
-    .setFooter({ text: `${data.stats.people} member(s) · ${data.stats.accounts} account(s) · ${data.stats.avgSlots.toFixed(1)} h average per member` })
-    .setTimestamp(now);
-
-  return { embeds: [embed], files: [new AttachmentBuilder(image, { name: 'quantum_schedule.png' })] };
+  const image = await renderQSTimeline({ ...data, guildName: guild.name, now: new Date() });
+  return { content: '', embeds: [], files: [new AttachmentBuilder(image, { name: 'quantum_schedule.png' })] };
 }
 
 async function fetchChannel(client, channelId) {

@@ -13,11 +13,12 @@ import {
   saveQSConfig,
   getQSMember,
   saveQSMember,
-  setQSSlots,
+  addQSSlots,
+  renameQSAccount,
   removeQSSlots,
   getQSMemberSlots,
-  getQSScheduleData,
-  MAX_NAMES_PER_SLOT
+  getQSMemberAccounts,
+  getQSScheduleData
 } from './quantumSchedulerConfig.js';
 import { buildQSBoardMessage, queueQSBoardUpdate } from './quantumSchedulerBoard.js';
 import {
@@ -36,6 +37,7 @@ import {
 } from './quantumSchedulerTime.js';
 
 const MAX_NAME_LENGTH = 32;
+const MAX_ALTS = 5;
 
 function addTimeOption(sub, name, description, required) {
   return sub.addStringOption(opt =>
@@ -59,31 +61,44 @@ export const quantumSchedulerCommand = new SlashCommandBuilder()
       )
       .addSubcommand(sub => {
         sub.setName('set')
-          .setDescription('Add your hours (in your local time) and the game accounts you bring to them');
-        addTimeOption(sub, 'from', 'Local start time, e.g. 03:00. Set timezone first to preview the UTC time', true);
-        addTimeOption(sub, 'to', 'Local end time (not included), e.g. 06:00. Empty = one hour', false);
+          .setDescription('Add hours (in your local time) for your main and alt accounts. Keeps your other hours');
         sub.addStringOption(opt =>
           opt.setName('timezone')
-            .setDescription('Your timezone, e.g. Europe/Istanbul or UTC+3. Saved for next time')
+            .setDescription('Your timezone, e.g. Europe/Istanbul or UTC+3. Your saved one is listed first')
+            .setRequired(true)
             .setAutocomplete(true)
             .setMaxLength(64)
         );
-        for (let i = 1; i <= MAX_NAMES_PER_SLOT; i++) {
+        addTimeOption(sub, 'from', 'Local start time, e.g. 03:00', true);
+        addTimeOption(sub, 'to', 'Local end time (not included), e.g. 06:00. Empty = one hour', false);
+        sub.addStringOption(opt =>
+          opt.setName('main')
+            .setDescription('Your main game account. Empty = your server nickname')
+            .setMaxLength(MAX_NAME_LENGTH)
+        );
+        for (let i = 1; i <= MAX_ALTS; i++) {
           sub.addStringOption(opt =>
-            opt.setName(`name${i}`)
-              .setDescription(i === 1
-                ? 'Game account for these hours (main). Empty = the accounts you used last time'
-                : `Additional game account (alt) ${i - 1} for these hours`)
+            opt.setName(`alt${i}`)
+              .setDescription(`Alt game account ${i} for these hours`)
               .setMaxLength(MAX_NAME_LENGTH)
           );
         }
-        return sub;
+        return sub.addBooleanOption(opt =>
+          opt.setName('alts_only')
+            .setDescription('Add these hours only for the alts, not your main')
+        );
       })
       .addSubcommand(sub => {
         sub.setName('remove')
-          .setDescription('Remove your hours. Without times, removes all of them');
+          .setDescription('Remove hours. Without times, every hour; without account, every account');
         addTimeOption(sub, 'from', 'Local start time, e.g. 03:00', false);
         addTimeOption(sub, 'to', 'Local end time (not included). Empty = one hour', false);
+        sub.addStringOption(opt =>
+          opt.setName('account')
+            .setDescription('Only remove this game account from those hours')
+            .setAutocomplete(true)
+            .setMaxLength(MAX_NAME_LENGTH)
+        );
         return sub.addUserOption(opt =>
           opt.setName('member')
             .setDescription('Admins: remove another member\'s hours')
@@ -185,32 +200,46 @@ async function handleAutocomplete(interaction, pool) {
     return interaction.respond(timeSuggestions(focused.value, zone, focused.name === 'to'));
   }
 
+  if (focused.name === 'account') {
+    const userId = interaction.options.get('member')?.value || interaction.user.id;
+    const typed = focused.value.toLowerCase();
+    const accounts = await getQSMemberAccounts(pool, interaction.guildId, userId);
+    return interaction.respond(accounts
+      .filter(name => name.toLowerCase().includes(typed))
+      .slice(0, 25)
+      .map(name => ({ name, value: name })));
+  }
+
   return interaction.respond([]);
 }
 
 // --- Replies ---
 
-function describeSchedule(slots, zone) {
+// One line per account: its UTC hour ranges, with the member's local times next to them
+function describeSchedule(slots, zone, mainName) {
   if (slots.length === 0) return '*You have no hours on the schedule.*';
 
   const offset = getOffsetMinutes(zone || 'UTC');
-  const byNames = new Map();
+  const byAccount = new Map();
   for (const slot of slots) {
-    const key = slot.names.join('\u0000');
-    if (!byNames.has(key)) byNames.set(key, { names: slot.names, hours: [] });
-    byNames.get(key).hours.push(slot.hour);
-  }
-
-  const lines = [];
-  for (const { names, hours } of byNames.values()) {
-    for (const range of groupHourRanges(hours)) {
-      const local = zone && offset !== 0
-        ? ` (${formatMinutes(utcToLocalMinutes(range.start * 60, offset))}–${formatMinutes(utcToLocalMinutes(range.end * 60, offset))} local)`
-        : '';
-      lines.push(`• **${formatUtcRange(range)} UTC**${local}: ${names.join(', ')}`);
+    for (const name of slot.names) {
+      if (!byAccount.has(name)) byAccount.set(name, []);
+      byAccount.get(name).push(slot.hour);
     }
   }
-  return lines.join('\n');
+
+  const accounts = [...byAccount.keys()]
+    .sort((a, b) => (b.toLowerCase() === mainName?.toLowerCase()) - (a.toLowerCase() === mainName?.toLowerCase()));
+  return accounts.map(name => {
+    const ranges = groupHourRanges(byAccount.get(name)).map(range => {
+      const local = zone && offset !== 0
+        ? ` (${formatMinutes(utcToLocalMinutes(range.start * 60, offset))}–${formatMinutes(utcToLocalMinutes(range.end * 60, offset))})`
+        : '';
+      return `${formatUtcRange(range)}${local}`;
+    });
+    const label = name.toLowerCase() === mainName?.toLowerCase() ? `**${name}** (main)` : `**${name}**`;
+    return `• ${label}: ${ranges.join(', ')} UTC`;
+  }).join('\n') + (zone && offset !== 0 ? '\n-# Local times in brackets.' : '');
 }
 
 function describeHours(hours) {
@@ -241,23 +270,37 @@ async function handleSet(interaction, client, pool) {
   const offset = getOffsetMinutes(zone || 'UTC');
   const hours = resolveHourRange(fromLocal, toLocal, offset);
 
-  const givenNames = cleanNames(Array.from({ length: MAX_NAMES_PER_SLOT }, (_, i) => interaction.options.getString(`name${i + 1}`)));
+  // One name per main account: a given main replaces the saved one, an empty main keeps it,
+  // and only a member without a saved main falls back to their nickname on this server
   const displayName = memberDisplayName(interaction);
-  const names = givenNames.length > 0
-    ? givenNames
-    : (member?.defaultNames?.length ? member.defaultNames : [displayName]);
+  const mainName = cleanNames([interaction.options.getString('main') || member?.mainName || displayName])[0];
+  const alts = cleanNames(Array.from({ length: MAX_ALTS }, (_, i) => interaction.options.getString(`alt${i + 1}`)))
+    .filter(name => name.toLowerCase() !== mainName.toLowerCase());
+  const altsOnly = interaction.options.getBoolean('alts_only') === true;
 
-  await saveQSMember(pool, guildId, interaction.user.id, { displayName, timeZone: typedZone, defaultNames: givenNames });
-  await setQSSlots(pool, guildId, interaction.user.id, hours, names);
+  if (altsOnly && alts.length === 0) {
+    return interaction.reply({ content: '❌ `alts_only` needs at least one alt name.', flags: 64 });
+  }
+  const names = altsOnly ? alts : [mainName, ...alts];
+
+  // A renamed main carries its existing hours over to the new name
+  const previousMain = member?.mainName;
+  const renamed = previousMain && previousMain !== mainName
+    ? await renameQSAccount(pool, guildId, interaction.user.id, previousMain, mainName)
+    : 0;
+
+  await saveQSMember(pool, guildId, interaction.user.id, { displayName, timeZone: typedZone, mainName });
+  await addQSSlots(pool, guildId, interaction.user.id, hours, names);
   const slots = await getQSMemberSlots(pool, guildId, interaction.user.id);
 
-  const lines = [`✅ Added **${describeHours(hours)}** as ${names.join(', ')}.`];
-  if (!zone) {
-    lines.push('ℹ️ No timezone saved, so the times were read as **UTC**. Add `timezone` once to enter local times.');
-  } else if (typedZone) {
+  const lines = [`✅ Added **${describeHours(hours)}** for ${names.join(', ')}. Your other hours are unchanged.`];
+  if (previousMain && previousMain !== mainName) {
+    lines.push(`✏️ Main renamed from **${previousMain}** to **${mainName}**${renamed > 0 ? ` in ${renamed} hour(s)` : ''}.`);
+  }
+  if (typedZone && typedZone !== member?.timeZone) {
     lines.push(`🌍 Timezone saved: **${describeTimeZone(zone)}**`);
   }
-  lines.push('', '**Your schedule**', describeSchedule(slots, zone));
+  lines.push('', '**Your schedule**', describeSchedule(slots, zone, mainName));
 
   await interaction.reply({ content: lines.join('\n'), flags: 64 });
   queueQSBoardUpdate(client, pool, guildId);
@@ -292,14 +335,15 @@ async function handleRemove(interaction, client, pool) {
     hours = resolveHourRange(fromLocal, toLocal, getOffsetMinutes(zone || 'UTC'));
   }
 
-  const removed = await removeQSSlots(pool, guildId, targetId, hours);
+  const account = interaction.options.getString('account')?.trim() || null;
+  const removed = await removeQSSlots(pool, guildId, targetId, hours, account ? [account] : null);
   const who = targetId === interaction.user.id ? 'your' : `<@${targetId}>'s`;
-  const scope = hours ? ` in ${describeHours(hours)}` : '';
+  const scope = `${account ? ` for **${account}**` : ''}${hours ? ` in ${describeHours(hours)}` : ''}`;
   const lines = [removed > 0 ? `🗑️ Removed ${removed} hour(s) of ${who} schedule${scope}.` : `ℹ️ Nothing of ${who} schedule to remove${scope}.`];
 
   if (targetId === interaction.user.id) {
     const member = await getQSMember(pool, guildId, targetId);
-    lines.push('', '**Your schedule**', describeSchedule(await getQSMemberSlots(pool, guildId, targetId), member?.timeZone));
+    lines.push('', '**Your schedule**', describeSchedule(await getQSMemberSlots(pool, guildId, targetId), member?.timeZone, member?.mainName));
   }
 
   await interaction.reply({ content: lines.join('\n'), flags: 64, allowedMentions: { parse: [] } });
@@ -321,11 +365,19 @@ export async function buildQSConfigPayload(pool, guildId, config, notice = '') {
       { name: 'Output Channel / Thread', value: channelText, inline: true },
       { name: 'Board Message', value: boardText, inline: true },
       { name: 'Members With ≥1 Hour', value: `👤 ${stats.people}`, inline: true },
-      { name: 'Average Hours per Member', value: `⏱ ${stats.avgSlots.toFixed(1)}`, inline: true },
-      { name: 'Game Accounts', value: `🎮 ${stats.accounts} (${stats.peopleWithAlts} member(s) with alts)`, inline: true },
       {
-        name: 'Busiest Hour',
-        value: stats.busiestHour === null ? '*None yet*' : `${formatHour(stats.busiestHour)}–${formatHour((stats.busiestHour + 1) % 24)} UTC (${stats.busiestPeople} member(s))`,
+        name: 'Average Members per Hour',
+        value: `⌀ ${stats.avgPeoplePerHour.toFixed(1)} over 24 h\n⌀ ${stats.avgPeoplePerCoveredHour.toFixed(1)} over the ${stats.coveredHours} covered hour(s)`,
+        inline: true
+      },
+      { name: 'Game Accounts', value: `🎮 ${stats.accounts} (${stats.peopleWithAlts} member(s) with alts)`, inline: true },
+      { name: 'Average Hours per Member', value: `⏱ ${stats.avgSlots.toFixed(1)}`, inline: true },
+      {
+        name: 'Busiest Hours (UTC)',
+        value: stats.busiest.length === 0
+          ? '*None yet*'
+          : stats.busiest.map((c, i) =>
+            `${i + 1}. ${formatHour(c.hour)}–${formatHour((c.hour + 1) % 24)} · 👤 ${c.people} · 🎮 ${c.accounts}`).join('\n'),
         inline: false
       }
     )
