@@ -25,6 +25,13 @@ import {
   refreshActiveRSBoards
 } from './rsscoreboard/rsScoreBoard.js';
 
+import {
+  quantumSchedulerCommand,
+  handleQuantumSchedulerInteraction,
+  ensureQSTablesExist,
+  refreshAllQSBoards
+} from './quantumscheduler/quantumScheduler.js';
+
 dotenv.config();
 
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
@@ -38,7 +45,7 @@ function getModuleConfig() {
     return JSON.parse(raw);
   } catch (err) {
     console.error('Failed to load modules.json:', err);
-    return { artPoll: true, wsRoster: false, rsScoreBoard: true };
+    return { artPoll: true, wsRoster: false, rsScoreBoard: true, quantumScheduler: false };
   }
 }
 
@@ -52,6 +59,10 @@ async function registerCommands() {
 
   if (modules.rsScoreBoard) {
     commands.push(rsScoreBoardCommand.toJSON());
+  }
+
+  if (modules.quantumScheduler) {
+    commands.push(quantumSchedulerCommand.toJSON());
   }
 
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
@@ -85,6 +96,21 @@ client.once('clientReady', async () => {
         console.error('RSScoreBoard board refresh error:', err);
       }
     }, { timezone: 'UTC' });
+  }
+
+  if (modules.quantumScheduler) {
+    await ensureQSTablesExist(pool);
+
+    // Move the current-hour highlight and now marker on every schedule board
+    const refreshBoards = async () => {
+      try {
+        await refreshAllQSBoards(client, pool);
+      } catch (err) {
+        console.error('QuantumScheduler board refresh error:', err);
+      }
+    };
+    cron.schedule('*/15 * * * *', refreshBoards, { timezone: 'UTC' });
+    refreshBoards();
   }
 
   if (modules.artPoll) {
@@ -162,6 +188,20 @@ client.on('interactionCreate', async (interaction) => {
         return;
       } catch (err) {
         console.error('RSScoreBoard interaction error:', err);
+      }
+    }
+  }
+
+  if (modules.quantumScheduler) {
+    const isQSCmd = (interaction.isChatInputCommand() || interaction.isAutocomplete()) && interaction.commandName === 'quantum';
+    const isQSComp = interaction.isMessageComponent() && interaction.customId.startsWith('quantum_');
+
+    if (isQSCmd || isQSComp) {
+      try {
+        await handleQuantumSchedulerInteraction(interaction, client, pool);
+        return;
+      } catch (err) {
+        console.error('QuantumScheduler interaction error:', err);
       }
     }
   }

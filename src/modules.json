@@ -1,5 +1,6 @@
 {
   "artPoll": true,
   "wsRoster": false,
-  "rsScoreBoard": true
+  "rsScoreBoard": true,
+  "quantumScheduler": true
 }
