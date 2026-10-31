@@ -67,15 +67,15 @@ export const quantumSchedulerCommand = new SlashCommandBuilder()
       .addSubcommand(sub => {
         sub.setName('set')
           .setDescription('Add hours (in your local time) for your main and alt accounts. Keeps your other hours');
+        addTimeOption(sub, 'from', 'Local start time, e.g. 03:00', true);
+        addTimeOption(sub, 'to', 'Local end time (not included), e.g. 06:00. Empty = one hour', false);
+        // Needed only the first time; after that the saved timezone is used unless a new one is given
         sub.addStringOption(opt =>
           opt.setName('timezone')
-            .setDescription('Your timezone, e.g. Europe/Istanbul or UTC+3. Your saved one is listed first')
-            .setRequired(true)
+            .setDescription('Your timezone, e.g. Europe/Istanbul or UTC+3. Needed once, then saved. Use it to change')
             .setAutocomplete(true)
             .setMaxLength(64)
         );
-        addTimeOption(sub, 'from', 'Local start time, e.g. 03:00', true);
-        addTimeOption(sub, 'to', 'Local end time (not included), e.g. 06:00. Empty = one hour', false);
         sub.addStringOption(opt =>
           opt.setName('main')
             .setDescription('Your main game account. Empty = your server nickname')
@@ -183,7 +183,7 @@ async function resolveZone(pool, interaction) {
 
 function timeSuggestions(typed, zone, isEnd) {
   const offset = getOffsetMinutes(zone || 'UTC');
-  const suffix = zone ? ` · ${zone}` : ' · no timezone set, read as UTC';
+  const suffix = zone ? ` · ${zone}` : ' · as UTC: add timezone (first time only)';
   const choices = [];
   const add = (localMinutes, label) => {
     const value = formatMinutes(localMinutes);
@@ -276,6 +276,13 @@ async function handleSet(interaction, client, pool) {
   if (typed && !typedZone) {
     return interaction.reply({
       content: `❌ Unknown timezone \`${typed}\`. Pick one from the list, or use e.g. \`Europe/Berlin\` or \`UTC+3\`.`,
+      flags: 64
+    });
+  }
+  if (!zone) {
+    return interaction.reply({
+      content: '🌍 First time here: add the `timezone` option (e.g. `Europe/Istanbul` or `UTC+3`) so your local times can be ' +
+        'converted to UTC. It\'s saved, so you won\'t need it again unless you want to change it.',
       flags: 64
     });
   }
