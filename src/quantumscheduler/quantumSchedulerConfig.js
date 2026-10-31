@@ -35,14 +35,13 @@ export async function ensureQSTablesExist(pool) {
     ADD COLUMN IF NOT EXISTS allowed_role_ids TEXT[] DEFAULT '{}';
   `);
 
-  // One row per Discord member who used the scheduler. default_names are reused when /set gets no names.
+  // One row per Discord member who used the scheduler
   await pool.query(`
     CREATE TABLE IF NOT EXISTS quantum_scheduler_members (
       guild_id VARCHAR(32) NOT NULL,
       user_id VARCHAR(32) NOT NULL,
       display_name VARCHAR(100) NOT NULL,
       time_zone VARCHAR(64),
-      default_names TEXT[] DEFAULT '{}',
       updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY (guild_id, user_id)
     );
