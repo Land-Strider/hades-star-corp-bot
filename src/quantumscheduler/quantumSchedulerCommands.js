@@ -6,6 +6,7 @@ import {
   ButtonStyle,
   ChannelSelectMenuBuilder,
   RoleSelectMenuBuilder,
+  MentionableSelectMenuBuilder,
   ChannelType,
   ModalBuilder,
   TextInputBuilder,
@@ -115,16 +116,23 @@ export const quantumSchedulerCommand = new SlashCommandBuilder()
       )
   );
 
-// Config and removing other members' hours are for server admins only, whatever their roles are called
+// Removing other members' hours and changing who has config access are for server admins only
 function isServerAdmin(member) {
   return member?.permissions?.has(PermissionFlagsBits.Administrator) === true;
 }
 
 const ADMIN_ONLY = '❌ Only server admins (Administrator permission) can do this.';
+const CONFIG_DENIED = '❌ Only server admins and the members or roles given config access can use the configuration.';
 
 function memberRoleIds(member) {
   if (!member?.roles) return [];
   return Array.isArray(member.roles) ? member.roles : [...member.roles.cache.keys()];
+}
+
+// config: admins, plus the users and roles an admin gave config access
+function canConfigure(interaction, config) {
+  if (isServerAdmin(interaction.member) || config.configUserIds.includes(interaction.user.id)) return true;
+  return memberRoleIds(interaction.member).some(id => config.configRoleIds.includes(id));
 }
 
 // set/remove: admins, or members with one of the configured roles (no roles configured = everyone)
@@ -453,10 +461,16 @@ async function handleEventModal(interaction, client, pool) {
     if (notices.length > 0 && config.enabled && config.channelId) await queueQSBoardUpdate(client, pool, guildId);
   }
 
-  return interaction.editReply(await buildQSConfigPayload(pool, guildId, config, notices.join('\n') || 'ℹ️ No event time given.'));
+  return interaction.editReply(await buildQSConfigPayload(pool, guildId, config, notices.join('\n') || 'ℹ️ No event time given.',
+    isServerAdmin(interaction.member)));
 }
 
-export async function buildQSConfigPayload(pool, guildId, config, notice = '') {
+function describeConfigAccess(config) {
+  return [...config.configUserIds.map(id => `<@${id}>`), ...config.configRoleIds.map(id => `<@&${id}>`)].join(', ');
+}
+
+// viewerIsAdmin: only admins can change the config access list, so it's shown read-only to others
+export async function buildQSConfigPayload(pool, guildId, config, notice = '', viewerIsAdmin = true) {
   const { stats } = await getQSScheduleData(pool, guildId);
   const channelText = config.channelId ? `<#${config.channelId}>` : '*None (no board posted)*';
   const boardText = config.boardMessageId && config.boardChannelId === config.channelId
@@ -489,6 +503,7 @@ export async function buildQSConfigPayload(pool, guildId, config, notice = '') {
         value: config.allowedRoleIds.length > 0 ? config.allowedRoleIds.map(id => `<@&${id}>`).join(', ') : '*Everyone*',
         inline: true
       },
+      { name: 'Config Access (besides admins)', value: describeConfigAccess(config) || '*Admins only*', inline: false },
       {
         name: 'Busiest Hours (UTC)',
         value: stats.busiest.length === 0
@@ -498,7 +513,7 @@ export async function buildQSConfigPayload(pool, guildId, config, notice = '') {
         inline: false
       }
     )
-    .setFooter({ text: 'Config and removing other members\' hours: server admins only. Admins bypass the channel and role limits. The board is re-rendered after every change and every 15 minutes.' });
+    .setFooter({ text: 'Config: admins and the config access list (which only admins can change). Removing other members\' hours: admins only. Admins bypass the channel and role limits. The board is re-rendered after every change and every 15 minutes.' });
 
   const textChannelTypes = [
     ChannelType.GuildText,
@@ -529,6 +544,15 @@ export async function buildQSConfigPayload(pool, guildId, config, notice = '') {
     .setMinValues(0)
     .setMaxValues(10);
   if (config.allowedRoleIds.length > 0) roleSelect.setDefaultRoles(...config.allowedRoleIds);
+
+  const accessSelect = new MentionableSelectMenuBuilder()
+    .setCustomId('quantum_cfg_access')
+    .setPlaceholder(viewerIsAdmin ? 'Config access: players and roles (empty = admins only)' : 'Config access (admins only)')
+    .setMinValues(0)
+    .setMaxValues(25)
+    .setDisabled(!viewerIsAdmin);
+  if (config.configUserIds.length > 0) accessSelect.addDefaultUsers(...config.configUserIds);
+  if (config.configRoleIds.length > 0) accessSelect.addDefaultRoles(...config.configRoleIds);
 
   const actionButtons = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
@@ -561,6 +585,7 @@ export async function buildQSConfigPayload(pool, guildId, config, notice = '') {
       new ActionRowBuilder().addComponents(outputSelect),
       new ActionRowBuilder().addComponents(commandChannelSelect),
       new ActionRowBuilder().addComponents(roleSelect),
+      new ActionRowBuilder().addComponents(accessSelect),
       actionButtons
     ],
     flags: 64
@@ -587,8 +612,8 @@ export async function handleQuantumSchedulerInteraction(interaction, client, poo
     const config = await getQSConfig(pool, guildId);
 
     if (subcommand === 'config') {
-      if (!isServerAdmin(interaction.member)) return interaction.reply({ content: ADMIN_ONLY, flags: 64 });
-      const response = await interaction.reply(await buildQSConfigPayload(pool, guildId, config));
+      if (!canConfigure(interaction, config)) return interaction.reply({ content: CONFIG_DENIED, flags: 64 });
+      const response = await interaction.reply(await buildQSConfigPayload(pool, guildId, config, '', isServerAdmin(interaction.member)));
       attachAutoClose(interaction, response, 'Configuration menu');
       return;
     }
@@ -626,7 +651,12 @@ export async function handleQuantumSchedulerInteraction(interaction, client, poo
       });
     }
 
-    if (!isServerAdmin(interaction.member)) return interaction.reply({ content: ADMIN_ONLY, flags: 64 });
+    const viewerIsAdmin = isServerAdmin(interaction.member);
+    if (!canConfigure(interaction, await getQSConfig(pool, guildId))) {
+      return interaction.reply({ content: CONFIG_DENIED, flags: 64 });
+    }
+    // Who has config access is decided by admins only, so access can't be passed on
+    if (customId === 'quantum_cfg_access' && !viewerIsAdmin) return interaction.reply({ content: ADMIN_ONLY, flags: 64 });
 
     if (customId === 'quantum_cfg_event') {
       const [config, member] = await Promise.all([
@@ -672,13 +702,21 @@ export async function handleQuantumSchedulerInteraction(interaction, client, poo
       notice = config.allowedRoleIds.length > 0
         ? `🔒 Set/remove limited to ${config.allowedRoleIds.map(id => `<@&${id}>`).join(', ')} (and admins).`
         : '🔓 Everyone can set and remove their own hours again.';
+    } else if (customId === 'quantum_cfg_access') {
+      config.configUserIds = [...interaction.users.keys()];
+      config.configRoleIds = [...interaction.roles.keys()];
+      await saveQSConfig(pool, guildId, config);
+      const granted = describeConfigAccess(config);
+      notice = granted ? `🔑 Config access given to ${granted} (and admins).` : '🔒 Config is admins only again.';
     }
 
-    return interaction.editReply(await buildQSConfigPayload(pool, guildId, await getQSConfig(pool, guildId), notice));
+    return interaction.editReply(await buildQSConfigPayload(pool, guildId, await getQSConfig(pool, guildId), notice, viewerIsAdmin));
   }
 
   if (interaction.isModalSubmit() && interaction.customId === 'quantum_cfg_event_modal') {
-    if (!isServerAdmin(interaction.member)) return interaction.reply({ content: ADMIN_ONLY, flags: 64 });
+    if (!canConfigure(interaction, await getQSConfig(pool, guildId))) {
+      return interaction.reply({ content: CONFIG_DENIED, flags: 64 });
+    }
     return handleEventModal(interaction, client, pool);
   }
 }

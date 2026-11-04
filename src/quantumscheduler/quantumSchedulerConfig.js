@@ -4,7 +4,10 @@ export const DEFAULT_QS_CONFIG = {
   eventTimeMinutes: null,
   // Where members may use the commands ('' = anywhere) and who may use set/remove ([] = everyone). Admins bypass both.
   commandChannelId: '',
-  allowedRoleIds: []
+  allowedRoleIds: [],
+  // Non-admin users and roles that may open and change the config (e.g. to set the event time). Admins always can.
+  configUserIds: [],
+  configRoleIds: []
 };
 
 let tableInitialized = false;
@@ -33,6 +36,12 @@ export async function ensureQSTablesExist(pool) {
     ALTER TABLE quantum_scheduler_configs
     ADD COLUMN IF NOT EXISTS command_channel_id VARCHAR(32) DEFAULT '',
     ADD COLUMN IF NOT EXISTS allowed_role_ids TEXT[] DEFAULT '{}';
+  `);
+
+  await pool.query(`
+    ALTER TABLE quantum_scheduler_configs
+    ADD COLUMN IF NOT EXISTS config_user_ids TEXT[] DEFAULT '{}',
+    ADD COLUMN IF NOT EXISTS config_role_ids TEXT[] DEFAULT '{}';
   `);
 
   // One row per Discord member who used the scheduler
@@ -85,7 +94,9 @@ export async function getQSConfig(pool, guildId) {
     boardMessageId: row.board_message_id || '',
     eventTimeMinutes: row.event_time_minutes ?? null,
     commandChannelId: row.command_channel_id || '',
-    allowedRoleIds: row.allowed_role_ids || []
+    allowedRoleIds: row.allowed_role_ids || [],
+    configUserIds: row.config_user_ids || [],
+    configRoleIds: row.config_role_ids || []
   };
 }
 
@@ -97,16 +108,20 @@ export async function saveQSConfig(pool, guildId, config) {
   const merged = { ...DEFAULT_QS_CONFIG, ...config };
   await pool.query(
     `INSERT INTO quantum_scheduler_configs
-       (guild_id, channel_id, enabled, event_time_minutes, command_channel_id, allowed_role_ids, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, NOW())
+       (guild_id, channel_id, enabled, event_time_minutes, command_channel_id, allowed_role_ids,
+        config_user_ids, config_role_ids, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
      ON CONFLICT (guild_id) DO UPDATE SET
        channel_id         = EXCLUDED.channel_id,
        enabled            = EXCLUDED.enabled,
        event_time_minutes = EXCLUDED.event_time_minutes,
        command_channel_id = EXCLUDED.command_channel_id,
        allowed_role_ids   = EXCLUDED.allowed_role_ids,
+       config_user_ids    = EXCLUDED.config_user_ids,
+       config_role_ids    = EXCLUDED.config_role_ids,
        updated_at         = NOW()`,
-    [guildId, merged.channelId, merged.enabled, merged.eventTimeMinutes, merged.commandChannelId, merged.allowedRoleIds]
+    [guildId, merged.channelId, merged.enabled, merged.eventTimeMinutes, merged.commandChannelId, merged.allowedRoleIds,
+      merged.configUserIds, merged.configRoleIds]
   );
 }
 
