@@ -14,24 +14,6 @@ let tableInitialized = false;
 // Seed data for existing active servers — applied once if DB table is empty
 const INITIAL_SEEDS = [
   {
-    guildId: '1536462463652995165',
-    enabled: true,
-    channelId: '1536756681566986354',
-    allowedRoleIds: ['1536463807759781899'],
-    roleMentionId: '1536463807759781899',
-    pollStarted: true,
-    statsEnabled: true
-  },
-  {
-    guildId: '1536835786123776012',
-    enabled: true,
-    channelId: '1536835873486938142',
-    allowedRoleIds: ['1536836235572678716'],
-    roleMentionId: '1536836235572678716',
-    pollStarted: true,
-    statsEnabled: true
-  },
-  {
     guildId: '581734750834655243',
     enabled: true,
     channelId: '1279182022371315773',
