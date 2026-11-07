@@ -54,7 +54,7 @@ export async function ensureRSConfigTableExist(pool) {
     );
   `);
 
-  // One message per board image (summary, then ranking pages)
+  // Board message ids; one message since the Components V2 layout, several in the earlier one-message-per-image layout
   await pool.query(`
     ALTER TABLE rs_events ADD COLUMN IF NOT EXISTS board_message_ids TEXT[] DEFAULT '{}';
   `);

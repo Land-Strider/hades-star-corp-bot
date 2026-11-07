@@ -7,6 +7,8 @@ import {
   ChannelSelectMenuBuilder,
   ChannelType,
   AttachmentBuilder,
+  MediaGalleryBuilder,
+  MessageFlags,
   PermissionFlagsBits
 } from 'discord.js';
 import { getRSScoreBoardConfig, saveRSScoreBoardConfig, tierKey, TIER_LEVELS } from './rsScoreBoardConfig.js';
@@ -220,8 +222,7 @@ export async function getRSLeaderboardData(pool, guildId, eventId = null) {
   };
 }
 
-// The board as plain images: the event summary, then one ranking page per 10 players.
-// Each image is posted as its own message, since Discord crops several images in one message into a grid.
+// The board as plain images: the event summary, then one ranking page per 10 players
 export async function buildRSBoardImages(pool, guildId, eventId = null) {
   const data = await getRSLeaderboardData(pool, guildId, eventId);
   const images = [new AttachmentBuilder(await renderRSSummaryImage(data), { name: 'rs_summary.png' })];
@@ -242,6 +243,19 @@ export async function buildRSBoardImages(pool, guildId, eventId = null) {
   }
 
   return images;
+}
+
+// One message with every board image stacked full width. Each image gets its own media gallery
+// component (Components V2), since plain attachments in one message get cropped into a grid.
+export async function buildRSBoardPayload(pool, guildId, eventId = null) {
+  const images = await buildRSBoardImages(pool, guildId, eventId);
+  return {
+    flags: MessageFlags.IsComponentsV2,
+    files: images,
+    components: images.map(image =>
+      new MediaGalleryBuilder().addItems(item => item.setURL(`attachment://${image.name}`))
+    )
+  };
 }
 
 function buildRequirementsText(tierRequirements) {
@@ -348,12 +362,7 @@ export async function handleRSScoreBoardInteraction(interaction, client, pool) {
 
     if (subcommand === 'view') {
       await interaction.deferReply();
-      const [summary, ...pages] = await buildRSBoardImages(pool, guildId);
-      await interaction.editReply({ files: [summary] });
-      for (const page of pages) {
-        await interaction.followUp({ files: [page] });
-      }
-      return;
+      return interaction.editReply(await buildRSBoardPayload(pool, guildId));
     }
 
     if (subcommand === 'config') {

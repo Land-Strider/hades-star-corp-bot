@@ -1,5 +1,5 @@
 import { getRSScoreBoardConfig, recordNonEventRun } from './rsScoreBoardConfig.js';
-import { buildRSBoardImages } from './rsScoreBoardCommands.js';
+import { buildRSBoardPayload } from './rsScoreBoardCommands.js';
 import { getEventWindow } from './rsEventSchedule.js';
 
 export { rsScoreBoardCommand, handleRSScoreBoardInteraction } from './rsScoreBoardCommands.js';
@@ -157,8 +157,8 @@ export async function recordRSRun(pool, guildId, run, sourceMessageId = null) {
   }
 }
 
-// Edits the event's board messages in the display channel (summary first, then one per ranking page),
-// posting any that don't exist yet
+// Edits the event's board message in the display channel, or posts it if it doesn't exist yet.
+// Boards from earlier layouts (one message per image, or embeds) are replaced by a single message.
 async function publishRSBoard(client, pool, guildId, eventId, displayChannelId) {
   const channel = client.channels.cache.get(displayChannelId) ||
     await client.channels.fetch(displayChannelId).catch(() => null);
@@ -172,9 +172,8 @@ async function publishRSBoard(client, pool, guildId, eventId, displayChannelId) 
     [eventId]
   );
   const event = eventRes.rows[0];
-  const images = await buildRSBoardImages(pool, guildId, eventId);
+  const payload = await buildRSBoardPayload(pool, guildId, eventId);
 
-  // Boards posted before the image-only layout have just board_message_id (a single message with embeds)
   let knownIds = [];
   if (event && event.board_channel_id === displayChannelId) {
     knownIds = event.board_message_ids?.length ? event.board_message_ids : [event.board_message_id].filter(Boolean);
@@ -182,43 +181,38 @@ async function publishRSBoard(client, pool, guildId, eventId, displayChannelId) 
 
   const existing = [];
   for (const id of knownIds) {
-    existing.push(await channel.messages.fetch(id).catch(() => null));
+    const message = await channel.messages.fetch(id).catch(() => null);
+    if (message) existing.push(message);
   }
 
-  // If a message is gone, repost the whole board so the pages stay in order
-  const reuse = existing.slice(0, images.length);
-  if (reuse.some(message => !message)) {
-    for (const message of existing) {
-      if (message) await message.delete().catch(() => null);
-    }
-    existing.length = 0;
+  // Edit the first message in place; if it can't take the new layout, post a fresh one
+  let board = null;
+  if (existing.length > 0) {
+    board = await existing[0].edit({ ...payload, content: null, embeds: [], attachments: [] })
+      .catch(err => {
+        console.log(`[RSScoreBoard] Could not edit board message ${existing[0].id}, reposting: ${err.message}`);
+        return null;
+      });
   }
 
-  const messageIds = [];
-  let posted = 0;
-  for (let i = 0; i < images.length; i++) {
-    if (existing[i]) {
-      await existing[i].edit({ content: '', embeds: [], files: [images[i]], attachments: [] });
-      messageIds.push(existing[i].id);
-    } else {
-      const sent = await channel.send({ files: [images[i]] });
-      messageIds.push(sent.id);
-      posted++;
-    }
+  let posted = false;
+  if (!board) {
+    board = await channel.send(payload);
+    posted = true;
   }
 
-  // Fewer pages than before: remove the extra messages
-  for (const message of existing.slice(images.length)) {
-    if (message) await message.delete().catch(() => null);
+  // Remove every other message of this board (older layouts posted one message per image)
+  for (const message of existing) {
+    if (message.id !== board.id) await message.delete().catch(() => null);
   }
 
   await pool.query(
     `UPDATE rs_events SET board_channel_id = $2, board_message_id = $3, board_message_ids = $4 WHERE event_id = $1`,
-    [eventId, displayChannelId, messageIds[0], messageIds]
+    [eventId, displayChannelId, board.id, [board.id]]
   );
 
-  if (posted > 0) {
-    console.log(`📢 [RSScoreBoard] Posted ${posted} board message(s) for event #${eventId} to channel ${displayChannelId}`);
+  if (posted) {
+    console.log(`📢 [RSScoreBoard] Posted leaderboard for event #${eventId} to channel ${displayChannelId}`);
   }
 }
 
