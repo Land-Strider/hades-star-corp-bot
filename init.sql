@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS rs_events (
     last_run_at TIMESTAMP WITH TIME ZONE NOT NULL,
     board_channel_id VARCHAR(32) DEFAULT '',
     board_message_id VARCHAR(32) DEFAULT '',
+    board_message_ids TEXT[] DEFAULT '{}',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 

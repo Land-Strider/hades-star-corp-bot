@@ -14,10 +14,8 @@ import { renderRSSummaryImage, renderRSRankingPage } from './rsScoreBoardRendere
 import { getEventWindow, getNextEventWindow, isEventWindowActive } from './rsEventSchedule.js';
 
 const PLAYERS_PER_PAGE = 10;
-// The bot's StarRed application emoji
-const RED_STAR_EMOJI = '<:StarRed:1564626851278626937>';
-// Discord allows 10 embeds per message: one summary image + up to 9 ranking pages
-const MAX_RANKING_PAGES = 9;
+// Caps the board at 100 players (one message per page)
+const MAX_RANKING_PAGES = 10;
 
 export const rsScoreBoardCommand = new SlashCommandBuilder()
   .setName('rsboard')
@@ -222,27 +220,11 @@ export async function getRSLeaderboardData(pool, guildId, eventId = null) {
   };
 }
 
-export async function buildRSBoardMessage(pool, guildId, eventId = null) {
+// The board as plain images: the event summary, then one ranking page per 10 players.
+// Each image is posted as its own message, since Discord crops several images in one message into a grid.
+export async function buildRSBoardImages(pool, guildId, eventId = null) {
   const data = await getRSLeaderboardData(pool, guildId, eventId);
-  const files = [];
-  const embeds = [];
-
-  files.push(new AttachmentBuilder(await renderRSSummaryImage(data), { name: 'rs_summary.png' }));
-
-  const unix = date => Math.floor(date.getTime() / 1000);
-  let description;
-  if (!data.event) {
-    description = `No Corp RS Event recorded yet. Season ${data.nextEvent.number} starts <t:${unix(data.nextEvent.start)}:R>.`;
-  } else if (data.event.active) {
-    description = `Corp RS Event Season ${data.event.number} ends <t:${unix(data.event.end)}:R>.`;
-  } else {
-    description = `Corp RS Event Season ${data.event.number} ended <t:${unix(data.event.end)}:f>. Season ${data.nextEvent.number} starts <t:${unix(data.nextEvent.start)}:R>.`;
-  }
-
-  embeds.push(new EmbedBuilder()
-    .setColor(0x9b1c31)
-    .setDescription(`${RED_STAR_EMOJI} ${description}`)
-    .setImage('attachment://rs_summary.png'));
+  const images = [new AttachmentBuilder(await renderRSSummaryImage(data), { name: 'rs_summary.png' })];
 
   // Players without an active tier have their bar scaled against the top contributor
   const leaderPoints = Math.max(1, ...data.players.map(p => p.totalPoints));
@@ -250,23 +232,16 @@ export async function buildRSBoardMessage(pool, guildId, eventId = null) {
 
   for (let page = 0; page < pageCount; page++) {
     const firstRank = page * PLAYERS_PER_PAGE + 1;
-    const name = `rs_ranking_${page + 1}.png`;
     const image = await renderRSRankingPage({
       eventNumber: data.event?.number,
       firstRank,
       players: data.players.slice(firstRank - 1, firstRank - 1 + PLAYERS_PER_PAGE),
       leaderPoints
     });
-    files.push(new AttachmentBuilder(image, { name }));
-    embeds.push(new EmbedBuilder().setColor(0x9b1c31).setImage(`attachment://${name}`));
+    images.push(new AttachmentBuilder(image, { name: `rs_ranking_${page + 1}.png` }));
   }
 
-  const hidden = data.players.length - pageCount * PLAYERS_PER_PAGE;
-  embeds[embeds.length - 1]
-    .setFooter({ text: `Total Runs: ${data.totalRuns} • Non-event runs logged: ${data.nonEventRunCount}${hidden > 0 ? ` • ${hidden} more player(s) not shown` : ''}` })
-    .setTimestamp(data.now);
-
-  return { embeds, files };
+  return images;
 }
 
 function buildRequirementsText(tierRequirements) {
@@ -373,7 +348,12 @@ export async function handleRSScoreBoardInteraction(interaction, client, pool) {
 
     if (subcommand === 'view') {
       await interaction.deferReply();
-      return interaction.editReply(await buildRSBoardMessage(pool, guildId));
+      const [summary, ...pages] = await buildRSBoardImages(pool, guildId);
+      await interaction.editReply({ files: [summary] });
+      for (const page of pages) {
+        await interaction.followUp({ files: [page] });
+      }
+      return;
     }
 
     if (subcommand === 'config') {

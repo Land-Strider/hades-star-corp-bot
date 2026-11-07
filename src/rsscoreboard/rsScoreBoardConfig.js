@@ -54,6 +54,11 @@ export async function ensureRSConfigTableExist(pool) {
     );
   `);
 
+  // One message per board image (summary, then ranking pages)
+  await pool.query(`
+    ALTER TABLE rs_events ADD COLUMN IF NOT EXISTS board_message_ids TEXT[] DEFAULT '{}';
+  `);
+
   await pool.query(`
     CREATE INDEX IF NOT EXISTS rs_events_guild_started_idx ON rs_events (guild_id, started_at DESC);
   `);

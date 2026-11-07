@@ -1,5 +1,5 @@
 import { getRSScoreBoardConfig, recordNonEventRun } from './rsScoreBoardConfig.js';
-import { buildRSBoardMessage } from './rsScoreBoardCommands.js';
+import { buildRSBoardImages } from './rsScoreBoardCommands.js';
 import { getEventWindow } from './rsEventSchedule.js';
 
 export { rsScoreBoardCommand, handleRSScoreBoardInteraction } from './rsScoreBoardCommands.js';
@@ -157,7 +157,8 @@ export async function recordRSRun(pool, guildId, run, sourceMessageId = null) {
   }
 }
 
-// Edits the event's leaderboard message in the display channel, or posts it if it doesn't exist yet
+// Edits the event's board messages in the display channel (summary first, then one per ranking page),
+// posting any that don't exist yet
 async function publishRSBoard(client, pool, guildId, eventId, displayChannelId) {
   const channel = client.channels.cache.get(displayChannelId) ||
     await client.channels.fetch(displayChannelId).catch(() => null);
@@ -167,26 +168,58 @@ async function publishRSBoard(client, pool, guildId, eventId, displayChannelId) 
   }
 
   const eventRes = await pool.query(
-    `SELECT board_channel_id, board_message_id FROM rs_events WHERE event_id = $1`,
+    `SELECT board_channel_id, board_message_id, board_message_ids FROM rs_events WHERE event_id = $1`,
     [eventId]
   );
   const event = eventRes.rows[0];
-  const payload = await buildRSBoardMessage(pool, guildId, eventId);
+  const images = await buildRSBoardImages(pool, guildId, eventId);
 
-  if (event?.board_message_id && event.board_channel_id === displayChannelId) {
-    const existing = await channel.messages.fetch(event.board_message_id).catch(() => null);
-    if (existing) {
-      await existing.edit({ ...payload, attachments: [] });
-      return;
+  // Boards posted before the image-only layout have just board_message_id (a single message with embeds)
+  let knownIds = [];
+  if (event && event.board_channel_id === displayChannelId) {
+    knownIds = event.board_message_ids?.length ? event.board_message_ids : [event.board_message_id].filter(Boolean);
+  }
+
+  const existing = [];
+  for (const id of knownIds) {
+    existing.push(await channel.messages.fetch(id).catch(() => null));
+  }
+
+  // If a message is gone, repost the whole board so the pages stay in order
+  const reuse = existing.slice(0, images.length);
+  if (reuse.some(message => !message)) {
+    for (const message of existing) {
+      if (message) await message.delete().catch(() => null);
+    }
+    existing.length = 0;
+  }
+
+  const messageIds = [];
+  let posted = 0;
+  for (let i = 0; i < images.length; i++) {
+    if (existing[i]) {
+      await existing[i].edit({ content: '', embeds: [], files: [images[i]], attachments: [] });
+      messageIds.push(existing[i].id);
+    } else {
+      const sent = await channel.send({ files: [images[i]] });
+      messageIds.push(sent.id);
+      posted++;
     }
   }
 
-  const sent = await channel.send(payload);
+  // Fewer pages than before: remove the extra messages
+  for (const message of existing.slice(images.length)) {
+    if (message) await message.delete().catch(() => null);
+  }
+
   await pool.query(
-    `UPDATE rs_events SET board_channel_id = $2, board_message_id = $3 WHERE event_id = $1`,
-    [eventId, displayChannelId, sent.id]
+    `UPDATE rs_events SET board_channel_id = $2, board_message_id = $3, board_message_ids = $4 WHERE event_id = $1`,
+    [eventId, displayChannelId, messageIds[0], messageIds]
   );
-  console.log(`📢 [RSScoreBoard] Posted leaderboard for event #${eventId} to channel ${displayChannelId}`);
+
+  if (posted > 0) {
+    console.log(`📢 [RSScoreBoard] Posted ${posted} board message(s) for event #${eventId} to channel ${displayChannelId}`);
+  }
 }
 
 function queueBoardUpdate(guildId, task) {
